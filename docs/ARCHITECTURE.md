@@ -89,8 +89,12 @@ terminate it [R03 §8 row 5]. The worker also persists in-flight request ids in 
 
 Detection on `focusin` (capture) via `composedPath()[0]`, descending into open shadow roots. Eligible: `textarea`,
 text-like `input`, and contenteditable roots at least 38 px tall and not read-only; excluded: password/payment/OTP
-inputs, `data-gramm="false"` / `data-gramm_editor="false"` / `data-enable-grammarly="false"` / `data-jammarly="false"`,
-code editors (CodeMirror, Monaco, Ace), and Google Docs' hidden input iframe [R03 §8 row 13, R04 §8].
+inputs, code editors (CodeMirror, Monaco, Ace), and Google Docs' hidden input iframe [R03 §8 row 13, R04 §8].
+Site opt-out (union of every convention, [R09 §1.6]): the field or an ancestor has `data-gramm`, `data-gramm_editor`
+or `data-jammarly` with any value other than `"true"`, or `data-enable-grammarly="false"`, or `data-lt-active="false"`.
+Opt-in overrides: `data-enable-grammarly="true"` or `data-jammarly="true"`. `spellcheck="false"` is never an opt-out
+(Squire, CodeMirror and others set it for unrelated reasons). A setting "Check fields that sites disabled" exists.
+Gmail is detected by `[g_editable="true"]`, not by the localized aria-label.
 
 | Adapter | Read | Draw | Apply (ladder, verified after each rung) |
 |---|---|---|---|
@@ -100,8 +104,10 @@ code editors (CodeMirror, Monaco, Ace), and Google Docs' hidden input iframe [R0
 | Google Docs | annotated-canvas text via MAIN-world `_docs_annotate_getAnnotatedText` | SVG `rect[aria-label]` geometry | `setSelection(start,end)` + synthetic `paste` into `docs-texteventtarget-iframe`, verified by re-reading |
 
 Site profiles (`apps/extension/src/content/sites/*.ts`) select the adapter and the ladder order by hostname and
-DOM markers, mark Superhuman and Slashy as shortcut-heavy (the card never swallows unhandled keys, no single-letter
-shortcuts while the host field is focused), and set the default context (`email`, `chat`, `doc`, `social`).
+DOM markers, mark Superhuman (`mail.superhuman.com`, Squire editor: plain `execCommand('insertText')` persists, own
+undo stack), Slashy (`www.slashy.com`, Gmail-compatible single-letter shortcuts) and Gmail as shortcut-heavy (the
+card never swallows unhandled keys; no single-letter shortcuts while the host field is focused), carry debounce
+multipliers (Superhuman/Slashy: fast pass 900 ms, deep pass 4 s), and set the default context [R09 §1.4, §1.5].
 
 Accept-all applies the selected non-overlapping edits in descending offset order against one snapshot, verifies
 after each edit, stops on divergence and reports what was applied. Only `execCommand` keeps the host's native undo;
@@ -126,15 +132,25 @@ Jammarly therefore keeps its own per-field undo stack (text snapshot plus the ap
 
 ### 3.6 Settings, storage, sync
 
-* Everything lives in `chrome.storage.local` (`settings`, `profile`, `learning`, `device`), written only by the
-  service worker. Content scripts get what they need over the port; the API key never leaves the worker.
+* One source of truth: the profile document, cached in `chrome.storage.local` next to the device settings, written
+  only by the service worker. Content scripts never read storage; they receive `EffectiveConfig` over the port and
+  `config` broadcasts on change. `chrome.storage.sync` is unused. Secrets are stored with
+  `setAccessLevel('TRUSTED_CONTEXTS')` when the API exists (Chrome 140+). Budget: profile ≤ 1 MB, event buffer
+  ≤ 5,000 events with oldest-first eviction, dismissal fingerprints keyed by `docKey` with a 30-day TTL [R09 §1.8].
+* `docKey = sha256(userSalt ‖ origin ‖ fieldPath ‖ docHint)[0:16]` where `docHint` is a stable per-document token
+  when one exists (Gmail draft id, Docs document id, thread id in the URL) and `userSalt` is a random value stored in
+  the profile document. It keys dismissal memory and the `docId` of feedback events [R09 §1.12].
 * `profile` is the shared **profile document** (`ProfileDocument` in `@jammarly/shared/profile`): settings that
   make sense across devices (goals, categories, dialect, custom instructions, dictionary, muted rules, site
   overrides, voice profile, API key encrypted with a per-account key). Scalars are last-writer-wins registers with
   hybrid logical clocks; sets are add-wins observed-remove sets [R07 §9.2]. The same merge code runs on the device
   and the server.
-* When paired, the worker polls `GET /api/profile` with `If-None-Match` every 5 minutes (`chrome.alarms`) and pushes
-  local ops with `POST /api/profile/ops` two seconds after a change; `412` triggers a merge and retry.
+* When paired, the worker polls `GET /api/profile/version` (a tiny cached document) every 5 minutes while active and
+  every 15 minutes when idle (`chrome.alarms`), fetches the body only when the version changed, and pushes local ops
+  with `POST /api/profile/ops` two seconds after a change (at most 12 profile writes per day); `412` triggers a merge
+  and retry. Feedback events upload hourly while active plus an idle flush, at most 6 batches per device per day, to
+  stay inside the Vercel Hobby Blob operation budget [R09 §1.11]. When sync is paused (budget or offline) everything
+  keeps working from the local copy and the popup shows "sync paused".
 * Unpaired, everything still works locally with the API key entered in the options page.
 
 ### 3.7 Learning
@@ -151,16 +167,26 @@ Jammarly therefore keeps its own per-field undo stack (text snapshot plus the ap
   [R08 §8.3–8.4]. Synthesis runs in the web app nightly and on demand, and can also run on the device
   ("Learn my voice now") so an unpaired install still improves.
 
-### 3.8 Google Docs
+### 3.8 Google Docs (layered, [R09 §1.1])
 
-A MAIN-world `document_start` script on `https://docs.google.com/document/*` sets
-`window._docs_annotate_canvas_by_ext` to Jammarly's extension id (an advanced setting can substitute a
-compatibility id). Docs then renders an SVG annotation layer and exposes `_docs_annotate_getAnnotatedText(id)`
-with `getText()`, `getSelection()`, `setSelection()`. The isolated-world bridge polls the text every 125 ms,
-positions underlines from `rect[aria-label]` geometry, and applies edits by `setSelection` plus a synthetic `paste`
-into the `docs-texteventtarget-iframe` editable, verifying by re-reading [R06 §0]. Whether Google activates this
-for a non-publisher account with Jammarly's own id is unknown; the adapter degrades to a clear "Docs: read-only"
-state and the side panel still works on pasted text. A stable extension id is pinned with the manifest `key`.
+1. **Default for every install:** an explicit "Google Docs isn't supported inline" state on the floating button, and
+   the side panel's **paste → check → Accept all → copy back** flow, which also covers Slides, Sheets, Figma and
+   Canva.
+2. **Inline adapter, auto-enabled only when it works:** a MAIN-world `document_start` script on
+   `https://docs.google.com/document/*` sets `window._docs_annotate_canvas_by_ext` to Jammarly's own id (never
+   overwriting a pre-set flag). If Docs then exposes `_docs_annotate_getAnnotatedText(id)` as a function (which it
+   does for allow-listed ids and, reportedly, for the publisher's own account), the bridge activates: it polls
+   `getText()` every 125 ms, positions underlines from the SVG `rect[aria-label]` annotation layer, and applies edits
+   by `setSelection(start, end)` plus a synthetic `paste` (text/plain) into the `docs-texteventtarget-iframe`
+   editable, verified by re-reading. Otherwise the adapter stays off and layer 1 applies.
+3. **No borrowed ids.** The "compatibility id" that other extensions ship belongs to a retired Microsoft product;
+   it is available only as a dev-build environment flag for comparison testing, never as a product setting.
+4. Submit Google's allow-list form on day one; plan for no answer. Post-v1: "send accepted edits as Suggestions"
+   through the Docs REST API with the non-sensitive `drive.file` scope and the Google Picker [R09 §1.2].
+
+A stable extension id is pinned with the manifest `key` (`apps/extension/EXTENSION_ID`). MAIN-world scripts are
+subject to the page CSP (Trusted Types on Google hosts), so they never use HTML-string sinks; isolated-world
+content scripts carry their own CSP in Chrome [R09 §1.18].
 
 ### 3.9 Minimum Chrome
 
@@ -173,9 +199,11 @@ state and the side panel still works on pasted text. A stable extension id is pi
   learning routes [R07 §9.1].
 * **Auth:** single owner. `OWNER_PASSWORD_HASH` (scrypt) + iron-session v9 sealed cookie. Device bearer tokens
   (`jm1.<deviceId>.<secret>`, stored hashed). Upgrade path: Auth.js Google provider.
-* **Storage:** one private Vercel Blob store (OIDC). Paths `users/owner/profile.json` (ETag CAS), `.../snapshots/`,
-  `.../events/<date>/<device>.jsonl`, `.../devices.json`, `auth/pairings/<id>.json`. Event uploads are batched at
-  most hourly per device to respect the Hobby plan's advanced-operation budget [R08 reviewer 36].
+* **Storage:** one private Vercel Blob store (OIDC). Paths `users/owner/profile.json` (ETag CAS),
+  `users/owner/version.json` (tiny, served cached for polling), `.../snapshots/`, `.../events/<date>/<device>.jsonl`,
+  `.../events/index.json` (never `list()` in the hot path), `.../devices.json`, `auth/pairings/<id>.json`. The daily
+  fold compacts event batches into counters and deletes the raw blobs. Budget target: ≈ 1,200 advanced and ≈ 5,000
+  simple operations per month for three devices, inside the Hobby caps [R09 §1.11].
 * **Pairing:** the dashboard calls `chrome.runtime.sendMessage(EXTENSION_ID, {type:'jammarly.pair', pairingId, code})`
   (`externally_connectable` pinned to the production origin); fallback: the user types the code into the options
   page [R07 §9.4].
@@ -184,7 +212,10 @@ state and the side panel still works on pasted text. A stable extension id is pi
   `/api/cron/synthesize` (`CRON_SECRET`), `/api/health`. CORS allowlist = pinned `chrome-extension://` ids.
 * **Pages:** Overview, Tuning (goals, categories, custom instructions, dictionary, muted rules, site overrides,
   models and API key), Voice (profile per context: view, edit, lock traits, regenerate, history), Learning
-  (acceptance by category, rule table with overrides, "what Jammarly learned"), Devices, Privacy.
+  (acceptance by category, rule table with overrides, "what Jammarly learned"), Devices, Privacy, and **Check text**
+  (paste → check → Accept all → copy, the universal fallback for canvas apps; the side panel offers the same).
+* **Contexts:** events and scopes use `email | chat | doc | social | code | other`; voice profiles use
+  `messages` (email, chat, social) and `documents` (doc, other); `code` gets no voice profile [R09 §1.13].
 * **Learning job:** folds events into counters, runs the deterministic learner, synthesizes the voice profile with
   Claude (`claude-opus-5-5`, structured output, streaming, effort medium), lints it so it can never relax
   correctness, stores a new version and a snapshot.

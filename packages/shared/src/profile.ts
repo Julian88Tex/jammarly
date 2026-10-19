@@ -122,6 +122,10 @@ export interface ProfileDocument {
     mode: Lww<'hybrid' | 'quality' | 'economy'>;
     model: Lww<string>;
     fastModel: Lww<string>;
+    /** Random 32-byte hex salt generated once per account; feeds docKey derivation. Never leaves the account. */
+    userSalt: Lww<string>;
+    /** Hosts where snippets are never stored (suffix match). */
+    privateSites: Lww<string[]>;
   };
   dictionary: OrSetElement<string>[];
   rules: {
@@ -138,6 +142,12 @@ export interface ProfileDocument {
     profiles: Partial<Record<VoiceContext, VoiceProfile>>;
   };
   learning: {
+    /**
+     * The whole learning section is replaced wholesale by whichever side carries the newer updatedHlc.
+     * When paired, the web app folds uploaded events and is authoritative; an unpaired device folds locally.
+     * This avoids double counting the same events on both sides.
+     */
+    updatedHlc: Hlc;
     /** "<scope>|<scopeKey>|<rule>" -> stats */
     stats: Record<string, RuleStats>;
     /** rule id -> learned state (resolved across scopes by the learner). */
@@ -201,11 +211,13 @@ export function defaultProfile(now = '1970-01-01T00:00:00.000Z'): ProfileDocumen
       mode: { value: 'hybrid', hlc: z },
       model: { value: 'claude-opus-5-5', hlc: z },
       fastModel: { value: 'claude-haiku-5-5', hlc: z },
+      userSalt: { value: '', hlc: z },
+      privateSites: { value: [], hlc: z },
     },
     dictionary: [],
     rules: { muted: [], weights: {} },
     sites: { disabled: [], overrides: {} },
     voice: { settings: { value: { strength: 2, notes: '' }, hlc: z }, profiles: {} },
-    learning: { stats: {}, ruleStates: {}, dictionaryCandidates: [], history: [], lastEventCursor: '' },
+    learning: { updatedHlc: z, stats: {}, ruleStates: {}, dictionaryCandidates: [], history: [], lastEventCursor: '' },
   };
 }

@@ -320,8 +320,8 @@ export interface DeviceSettings {
   colorblindMode: boolean;
   /** Keep <=200-char redacted snippets in feedback events (needed for voice learning). */
   storeSnippets: boolean;
-  /** Advanced: Google Docs compatibility extension id to announce instead of our own ("" = own id). */
-  gdocsCompatibilityId: string;
+  /** Google Docs inline mode: 'auto' enables the bridge only when Docs exposes the annotated-text API for our id. */
+  gdocsInline: 'auto' | 'off';
   /** Pairing with the web app; null when unpaired. */
   pairing: DevicePairing | null;
 }
@@ -347,7 +347,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   showUnderlines: true,
   colorblindMode: false,
   storeSnippets: true,
-  gdocsCompatibilityId: '',
+  gdocsInline: 'auto',
   pairing: null,
 };
 
@@ -376,8 +376,11 @@ export interface EffectiveConfig {
   styleDecisions: StyleDecisions;
   /** The engine is usable (key present or mock provider). */
   engineReady: boolean;
-  /** Google Docs: id to announce to the annotated-canvas API. */
+  /** Google Docs: id to announce to the annotated-canvas API (our own id; a dev build may override via env). */
   gdocsAnnounceId: string;
+  gdocsInline: 'auto' | 'off';
+  /** Random per-account salt used to derive stable, unlinkable document keys (docKey). */
+  userSalt: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,8 @@ export interface FeedbackEventInput {
   kind: FeedbackKind;
   suggestionId: string;
   fieldId: string;
+  /** Stable document identity: sha256(userSalt + origin + fieldPath + docHint) truncated to 16 hex chars. */
+  docKey: string;
   host: string;
   ctx: WritingContext;
   rule: string;
