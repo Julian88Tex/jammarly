@@ -4,6 +4,7 @@
   "description": "Grammar, clarity and tone suggestions powered by Claude. Hover to fix, or accept everything at once.",
   "version": "0.1.0",
   "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxIEBM5m936QjxSfkoySbD3569LYbAr/fji+vBjLiDq/bNwDjG2ZabQWqOpgm3PPdtiaRi0VKtlGe+PtKzqCTvj2V/pPKkHERGAcfcx/xUAYQm9k+8+y1Y9pu3nfCBjZEk1XGHaNzPqWJ3aMzWcD5cjcM9PZZJGLIpiJB013q09+aFwX3T1LUloKdedhDmjdLQSRgDHVZlw8nya5cNaU1uuJzfBD1VeR7r9xbBo+diW6GqR8bHUZy99VNWQrwibcZSM6ujNOVRuzw1Wv9Mt0a5Jfx3XjbfSLRiZiLY5BjlHz+0E859Q4MTZACAloBPjlAHYJO6GJtbF2fepdooUUopQIDAQAB",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -25,8 +26,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["content/content-script.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content/content-script.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true
@@ -39,27 +46,44 @@
     "page": "options/options.html",
     "open_in_tab": true
   },
-  "permissions": ["storage", "sidePanel", "activeTab", "scripting"],
-  "host_permissions": ["https://api.anthropic.com/*"],
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.anthropic.com/*"
+  ],
   "optional_host_permissions": [],
   "commands": {
     "_execute_action": {
-      "suggested_key": { "default": "Alt+Shift+J" },
+      "suggested_key": {
+        "default": "Alt+Shift+J"
+      },
       "description": "Open the Jammarly popup"
     },
     "toggle-on-site": {
-      "suggested_key": { "default": "Alt+Shift+G" },
+      "suggested_key": {
+        "default": "Alt+Shift+G"
+      },
       "description": "Turn Jammarly on or off for this site"
     },
     "accept-all": {
-      "suggested_key": { "default": "Alt+Shift+A" },
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
       "description": "Accept all suggestions in the focused field"
     }
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/*"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "icons/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "content_security_policy": {

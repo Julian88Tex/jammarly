@@ -1,0 +1,40 @@
+{
+  "name": "@jammarly/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "16.4.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "@jammarly/shared": "*",
+    "@vercel/blob": "2.8.2",
+    "iron-session": "9.0.1",
+    "@anthropic-ai/sdk": "0.135.0",
+    "zod": "4.6.7",
+    "@vercel/functions": "^3"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "26.6.5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.2",
+    "tailwindcss": "^4",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  },
+  "description": "Jammarly companion web app: owner login, device pairing, profile sync, suggestion tuning and tone learning.",
+  "engines": {
+    "node": "24.x"
+  }
+}
