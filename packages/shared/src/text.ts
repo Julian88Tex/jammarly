@@ -462,22 +462,27 @@ export function rebaseSuggestions(suggestions: Suggestion[], oldText: string, ne
   const region = diffShift(oldText, newText);
   const out: Suggestion[] = [];
   for (const s of suggestions) {
-    let { start, end } = s.range;
-    if (region !== null) {
-      if (end <= region.start) {
-        // entirely before: unchanged
-      } else if (start >= region.oldEnd) {
-        const delta = region.newEnd - region.oldEnd;
-        start += delta;
-        end += delta;
-      } else {
-        continue;
-      }
-    }
-    if (!isValidRange(start, end, newText.length) || newText.slice(start, end) !== s.original) continue;
-    out.push({ ...s, range: { start, end } });
+    const range = shiftRange(s.range, region);
+    if (range === null) continue;
+    // The hover target (highlight) must move with the edit too; if the user typed inside it, the target is stale.
+    const highlight = shiftRange(s.highlight ?? s.range, region);
+    if (highlight === null) continue;
+    if (!isValidRange(range.start, range.end, newText.length) || newText.slice(range.start, range.end) !== s.original) continue;
+    if (!isValidRange(highlight.start, highlight.end, newText.length)) continue;
+    out.push({ ...s, range, highlight });
   }
   return out;
+}
+
+/** Shifts a range across a single changed region; null when the range overlaps the region. */
+function shiftRange(r: TextRange, region: DiffRegion | null): TextRange | null {
+  if (region === null) return { start: r.start, end: r.end };
+  if (r.end <= region.start) return { start: r.start, end: r.end };
+  if (r.start >= region.oldEnd) {
+    const delta = region.newEnd - region.oldEnd;
+    return { start: r.start + delta, end: r.end + delta };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

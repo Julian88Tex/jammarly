@@ -63,11 +63,20 @@ function mk(partial: Partial<Suggestion> & { range: TextRange; original: string 
     range: partial.range,
     original: partial.original,
     replacement: partial.replacement ?? `${partial.original}!`,
-    alternatives: partial.alternatives,
+    alternatives: partial.alternatives ?? [],
     title: partial.title ?? 'Fix it',
     explanation: partial.explanation ?? 'Because.',
     confidence: partial.confidence ?? 1,
-    paragraphHash: partial.paragraphHash,
+    kind: partial.kind ?? 'replace',
+    tier: partial.tier ?? 'A',
+    highlight: partial.highlight ?? partial.range,
+    meaningPreserving: partial.meaningPreserving ?? true,
+    autoApplySafe: partial.autoApplySafe ?? true,
+    blockId: partial.blockId ?? 'b0',
+    blockHash: partial.blockHash ?? 'h0',
+    promptVersion: partial.promptVersion ?? 'test',
+    fingerprint: partial.fingerprint ?? `${partial.rule ?? 'spelling'}|${partial.original}|${partial.replacement ?? ''}`,
+    learnedState: partial.learnedState ?? 'active',
   };
 }
 
@@ -632,7 +641,7 @@ describe('resolveOverlaps', () => {
     const out = resolveOverlaps([loser, winner]);
     expect(out[0]?.id).toBe(winner.id);
     expect(out[0]?.alternatives).toEqual(['then']);
-    expect(winner.alternatives).toBeUndefined();
+    expect(winner.alternatives).toEqual([]);
   });
 
   it('same range with different replacements is an overlap, not a duplicate', () => {
@@ -1458,7 +1467,7 @@ describe('adversarial', () => {
       expect(out.map((s) => s.range)).toEqual([{ start: 1, end: 3 }, { start: 5, end: 6 }]);
     });
 
-    it('property: every survivor is valid in the new text, ids are a subset, and nothing but range changes', () => {
+    it('property: every survivor is valid in the new text, ids are a subset, and nothing but range and highlight changes', () => {
       const rng = makeRng(4242);
       for (let iter = 0; iter < 300; iter++) {
         const words = Array.from({ length: 2 + Math.floor(rng() * 6) }, () => randomText(rng, ['a', 'b', '😀', 'é', '“'], 4) || 'w');
@@ -1484,7 +1493,10 @@ describe('adversarial', () => {
           const src = byId.get(s.id);
           expect(src).toBeDefined();
           if (!src) continue;
-          expect({ ...s, range: null }).toEqual({ ...src, range: null });
+          expect({ ...s, range: null, highlight: null }).toEqual({ ...src, range: null, highlight: null });
+          // The hover target moves by exactly the same delta as the edit range.
+          expect(s.highlight.start - src.highlight.start).toBe(s.range.start - src.range.start);
+          expect(s.highlight.end - src.highlight.end).toBe(s.range.end - src.range.end);
         }
         expect(new Set(out.map((s) => s.id)).size).toBe(out.length);
       }
