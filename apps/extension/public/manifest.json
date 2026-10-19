@@ -36,7 +36,30 @@
       ],
       "run_at": "document_idle",
       "all_frames": true,
-      "match_about_blank": true
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "https://docs.google.com/document/*"
+      ],
+      "js": [
+        "content/gdocs/bootstrap.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://docs.google.com/document/*"
+      ],
+      "js": [
+        "content/gdocs/main-bridge.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN",
+      "all_frames": false
     }
   ],
   "side_panel": {
@@ -50,12 +73,12 @@
     "storage",
     "sidePanel",
     "activeTab",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://api.anthropic.com/*"
   ],
-  "optional_host_permissions": [],
   "commands": {
     "_execute_action": {
       "suggested_key": {
@@ -87,6 +110,9 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://api.anthropic.com"
+  },
+  "externally_connectable": {
+    "matches": []
   }
 }

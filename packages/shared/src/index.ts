@@ -3,3 +3,4 @@ export * from './profile';
 export * from './learning';
 export * from './api';
 export * from './text';
+export * from './rules';

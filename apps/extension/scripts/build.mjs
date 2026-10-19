@@ -2,7 +2,7 @@
 // Usage: node scripts/build.mjs [--watch] [--dev]
 import * as esbuild from 'esbuild';
 import { cp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,10 +15,24 @@ const dev = process.argv.includes('--dev') || watch;
 const entries = {
   'background/service-worker': 'src/background/service-worker.ts',
   'content/content-script': 'src/content/content-script.ts',
+  'content/gdocs-bootstrap': 'src/content/gdocs/bootstrap.ts', // MAIN world, document_start
+  'content/gdocs-main': 'src/content/gdocs/main-bridge.ts', // MAIN world, document_idle
   'sidepanel/sidepanel': 'src/sidepanel/sidepanel.ts',
   'options/options': 'src/options/options.ts',
   'popup/popup': 'src/popup/popup.ts',
 };
+
+/**
+ * Build-time configuration injected into the manifest and the bundles.
+ * JAMMARLY_APP_ORIGIN: production origin of the companion web app (e.g. https://jammarly-web.vercel.app). When set,
+ *   it is added to host_permissions, externally_connectable.matches and the extension-page CSP connect-src.
+ * JAMMARLY_GDOCS_ANNOUNCE_ID: dev-only override of the id announced to Google Docs (never set in release builds).
+ */
+const APP_ORIGIN = (process.env.JAMMARLY_APP_ORIGIN ?? '').replace(/\/+$/, '');
+if (APP_ORIGIN && !/^https:\/\/[a-z0-9.-]+$/i.test(APP_ORIGIN)) {
+  throw new Error(`JAMMARLY_APP_ORIGIN must be an https origin without a path, got: ${APP_ORIGIN}`);
+}
+const GDOCS_ANNOUNCE_ID = process.env.JAMMARLY_GDOCS_ANNOUNCE_ID ?? '';
 
 const existingEntries = Object.fromEntries(
   Object.entries(entries).filter(([, src]) => existsSync(path.join(root, src))),
@@ -36,7 +50,10 @@ const common = {
   logLevel: 'info',
   define: {
     'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
-    'globalThis.__JAMMARLY_DEV__': JSON.stringify(dev),
+    '__JAMMARLY_DEV__': JSON.stringify(dev),
+    '__JAMMARLY_APP_ORIGIN__': JSON.stringify(APP_ORIGIN),
+    '__JAMMARLY_GDOCS_ANNOUNCE_ID__': JSON.stringify(GDOCS_ANNOUNCE_ID),
+    '__JAMMARLY_VERSION__': JSON.stringify(JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version),
   },
   
   outdir: dist,
@@ -57,6 +74,18 @@ async function copyStatic() {
     const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     manifest.version = pkg.version;
+    if (APP_ORIGIN) {
+      const pattern = `${APP_ORIGIN}/*`;
+      manifest.host_permissions = [...new Set([...(manifest.host_permissions ?? []), pattern])];
+      manifest.externally_connectable = { matches: [pattern] };
+      manifest.content_security_policy = {
+        extension_pages: `script-src 'self'; object-src 'self'; connect-src https://api.anthropic.com ${APP_ORIGIN}`,
+      };
+    } else {
+      // Without an app origin no web page may message the extension; keep the key so Chrome does not default to
+      // allowing other extensions either.
+      manifest.externally_connectable = { matches: [] };
+    }
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   }
 }

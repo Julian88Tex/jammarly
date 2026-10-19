@@ -47,8 +47,17 @@ npm workspaces. The extension bundles `@jammarly/shared` sources; the web app tr
 
 Transport: content scripts and the side panel open a long-lived `chrome.runtime.Port` to the service worker. Every
 message is a discriminated union in `@jammarly/shared/types` (`PortMessage`). While a Claude request is in flight the
-worker streams progress over the port and pings `chrome.runtime.getPlatformInfo()` every 20 s so Chrome does not
-terminate it [R03 §8 row 5]. The worker also persists in-flight request ids in `chrome.storage.session`.
+worker streams progress over the port, the content script sends `ping` every 20 s, and the worker calls
+`chrome.runtime.getPlatformInfo()` every 20 s so Chrome does not terminate it [R03 §8 row 5]. The worker persists
+in-flight request ids in `chrome.storage.session` and, on startup, emits `check-result` with
+`error.code === 'cancelled'` (retryable) for each of them. **Recovery:** on `port.onDisconnect` the content script
+reconnects with backoff, re-sends `hello` and `field-attached`, then re-sends `check` for every outstanding version
+whose text hash is unchanged; on `pageshow` (bfcache restore) it reconnects. An e2e test streams a stubbed 60–90 s
+response to prove the worker survives; an offscreen-document fallback stays documented as plan B. Opening the side
+panel from the in-page button goes through `chrome.runtime.sendMessage` from the click handler (user gesture), not
+the port. **Instances:** the content script marks `<html data-jammarly-instance="<id>:<version>">`; a newer instance
+(after an update, injected into open tabs via `scripting.executeScript`) dispatches `jammarly:takeover` and the orphan
+tears down its overlay, observers and timers; orphans also self-destroy when `chrome.runtime.id` is gone.
 
 ### 3.2 Text model and anchoring
 
@@ -56,16 +65,44 @@ terminate it [R03 §8 row 5]. The worker also persists in-flight request ids in 
   snapshot text for every version that has an outstanding check.
 * Text is split into **blocks** (paragraphs, `splitParagraphs`). Each block is hashed with the prompt version, model,
   goals, dialect, style decisions and voice-profile version into a cache key.
+* `CheckRequest` carries **field facts only** (text, blocks, dirty hashes, pass, host, context, field kind,
+  DOM-derived protected ranges). The worker merges device settings, the profile document and learned state into the
+  prompt; the content script never sees profile-derived prompt inputs.
 * The engine returns suggestions anchored **relative to a block** by verbatim `original`, `prefix`, `suffix` and
-  `occurrence` [R02 §8]. The worker resolves them to absolute offsets with `locateSpan` (exact search, then a
-  length-preserving normalized search), validates every guard in [R02 §4.1] (sentence constraint, protected spans,
+  `occurrence` (1-based; `locateSpan` takes `occurrence - 1`) [R02 §8]. Blocks are sent as `<block id="b<index>">`.
+  The worker resolves anchors with `locateSpan` (exact search, then a length-preserving normalized search, recorded as
+  `anchor: 'exact' | 'normalized'`), validates every guard in [R02 §4.1] (sentence constraint, protected spans,
   no-ops, range trimming) and drops anything it cannot anchor.
-* The content script re-validates `text.slice(range) === original` at the current version. If the text moved on since
-  the request version it rebases with `rebaseSuggestions` (shift before/after the edit region, drop overlapping).
-* Overlaps are resolved with `resolveOverlaps`: correctness > clarity > engagement > delivery, then confidence.
-* Suggestions carry a `tier`: **A** mechanical correctness (`auto_apply_safe`), **B** style span edits, **C** sentence
-  rewrites with alternatives. Accept-all grammar applies A; Accept-all style applies B; Accept everything applies
-  A ∪ B and leaves C pending with a toast [R02 §5].
+* The worker **caches block-relative** results (`CachedSuggestion` with `rel` offsets) per cache key; absolute
+  `range`, `highlight`, `blockId` and the stable `id = hash(fieldId, blockHash, fingerprint, ordinalInBlock)` are derived at
+  serve time, so a paragraph that moved still serves correct offsets and cards never flicker between passes.
+* **Cache key** = stable JSON of `{ promptVersion, schemaVersion, model, effort, dialect, goals, context,
+  styleDecisions, categories, hash(customInstructions), hash(sorted protected terms), voiceProfileVersion,
+  voiceStrength }` plus the block hash. Neighbour context is passed but not keyed. The LRU (≤ 500 blocks) persists in
+  `chrome.storage.session` and is reloaded on worker start; after an extension update (`onInstalled` with
+  `reason === 'update'`) attached fields are silently re-checked instead of showing empty panels.
+* **Pass supersession**: per block hash the worker keeps the result with the highest pass rank (deep > fast > rules);
+  a fast result for a block that already has a deep result is ignored; the worker always emits the merged
+  best-per-block set with per-block provenance (`CheckResult.blocks`), and skips a fast pass when every dirty block
+  already has a deep entry. `tone` is only taken from responses that covered every block.
+* The content script owns the merged set. It keeps a per-version `DiffRegion` log from the oldest outstanding
+  request version to the current one, rebases results **stepwise** with `rebaseSuggestions` (shift before/after each
+  region, drop overlapping), re-runs local rules on every change, and resolves overlaps over rules ∪ LLM.
+* **Overlaps** are resolved with `resolveOverlaps` only among span edits (`kind` replace|delete|insert):
+  correctness > clarity > engagement > delivery, then confidence. Rewrites and flags stay out of it and are linked to
+  the spans inside their sentence via `conflictsWith`. Accepting a rewrite removes its conflicting spans; accepting
+  spans inside a rewrite transforms the rewrite's `original` and marks it `stale` ("sentence changed") until the
+  next check.
+* **Tiers** (also in `types.ts`): **A** = correctness ∧ kind ∈ {replace, delete, insert} ∧ severity error ∧
+  confidence ≥ 0.85 ∧ meaningPreserving ∧ autoApplySafe ∧ anchor exact ∧ within one sentence; **B** = clarity,
+  engagement or delivery span edits with confidence ≥ 0.7 ∧ meaningPreserving; **C** = rewrites, flags, and anything
+  not meaning-preserving. Accept-all grammar applies A; Accept-all style applies B; Accept everything applies A ∪ B
+  and leaves C pending (stale, re-checked) with a toast [R02 §5].
+* **Dismissal memory**: the worker keeps dismissed fingerprints per `docKey` (30-day TTL) and applied fingerprints per
+  field session in `chrome.storage.local`, and filters them before emitting `check-result`; the content script also
+  filters the in-flight result. "Add to dictionary", "Turn off suggestions like this" and the dismiss reasons
+  `not_this_site` / `never` are profile mutations the worker applies immediately (the content script sends
+  `add-to-dictionary`, `mute-rule`, `dismiss` messages; it never constructs profile ops).
 
 ### 3.3 Engine
 
@@ -94,7 +131,11 @@ Site opt-out (union of every convention, [R09 §1.6]): the field or an ancestor 
 or `data-jammarly` with any value other than `"true"`, or `data-enable-grammarly="false"`, or `data-lt-active="false"`.
 Opt-in overrides: `data-enable-grammarly="true"` or `data-jammarly="true"`. `spellcheck="false"` is never an opt-out
 (Squire, CodeMirror and others set it for unrelated reasons). A setting "Check fields that sites disabled" exists.
-Gmail is detected by `[g_editable="true"]`, not by the localized aria-label.
+Gmail is detected by `[g_editable="true"]`, not by the localized aria-label. Slack's composer carries
+`data-gramm="false"`, so the Slack site profile sets `ignoreSiteOptOut` (and every host gets a "Check here anyway"
+item in the floating-button menu, remembered in `settings.ignoreOptOutHosts`). Size gates per kind: textarea and
+contenteditable need `clientHeight ≥ 38 && clientWidth ≥ 120`; inputs need `clientHeight ≥ 24 && clientWidth ≥ 120`
+and no tiny `maxlength`; gates are re-evaluated on `ResizeObserver` so auto-growing fields become eligible.
 
 | Adapter | Read | Draw | Apply (ladder, verified after each rung) |
 |---|---|---|---|
@@ -109,10 +150,28 @@ undo stack), Slashy (`www.slashy.com`, Gmail-compatible single-letter shortcuts)
 card never swallows unhandled keys; no single-letter shortcuts while the host field is focused), carry debounce
 multipliers (Superhuman/Slashy: fast pass 900 ms, deep pass 4 s), and set the default context [R09 §1.4, §1.5].
 
+`FieldAdapter.applyEdit` is **asynchronous** and returns an `EditOutcome` (`applied | reverted | mismatch |
+unsupported | composing`, the rung used, and the post-apply text). Each write is verified immediately, at the next
+animation frame and at +150 ms (NBSP-normalized), because Lexical reverts foreign mutations up to ~100 ms later and
+Slate throttles selection. A rung is never re-run (Lexical duplicates). Deletions use a deletion ladder (native API →
+`beforeinput deleteContentBackward` with the range selected → `execCommand('delete')`), never an empty paste
+[R04 §4.6]. Nothing is written while an IME composition is active (`isComposing()`); accepts queue until
+`compositionend` + 50 ms and re-validate `original` first.
+
 Accept-all applies the selected non-overlapping edits in descending offset order against one snapshot, verifies
-after each edit, stops on divergence and reports what was applied. Only `execCommand` keeps the host's native undo;
-Jammarly therefore keeps its own per-field undo stack (text snapshot plus the applied suggestion set) and shows an
-"Applied N changes — Undo" toast [R01 reviewer 15].
+after each edit, aborts on the first mismatch and reports what was applied (`BatchEditOutcome`). Only `execCommand`
+keeps the host's native undo, one step per edit; Jammarly therefore defines **undo as inverse edits**: each
+`ApplyTransaction` stores the applied edits with post-apply ranges; undo maps them through later diff regions,
+re-validates `text.slice(range) === replacement`, and applies the inverses right-to-left through the same ladder.
+Whole-text snapshot restore is reserved for `textarea`/`input`. An `input` event with `inputType` `historyUndo` or
+`historyRedo` is treated as an ordinary text change (rebase, recompute `undoAvailable`, mark the transaction
+partially reverted). The toast reads "Applied N changes — Undo" and the panel offers per-item revert
+[R01 reviewer 15, R02 reviewer B4].
+
+`FieldAdapter.getProtectedRanges()` returns the union of `contenteditable=false` islands, replaced elements, zero-width
+characters and site-profile containers (`.gmail_quote`, `.gmail_signature`, `[data-lexical-decorator]`,
+`.ProseMirror-widget`); the worker masks them with same-length spaces before prompting and the content script
+re-checks intersection at apply time.
 
 ### 3.5 Overlay UI
 
@@ -129,6 +188,10 @@ Jammarly therefore keeps its own per-field undo stack (text snapshot plus the ap
   tone chip. Click opens the accept-all menu (counts per group, Accept all grammar / style / everything, open panel,
   turn off here).
 * Colors: correctness `#E0372C`, clarity `#2A7DE1`, engagement `#1D9F7A`, delivery `#8B5CF6`; brand `#0E9A74`.
+* Commands: `toggle-on-site`, `accept-all` (= Accept all grammar, the safe tier, routed to the active field) and
+  `open-panel`; `_execute_action` opens the popup. Alt+Shift chords avoid Chrome's built-ins (Ctrl+Shift+J is
+  DevTools) but can collide with Windows input-language switching on two-language profiles; they are user-editable at
+  `chrome://extensions/shortcuts`.
 
 ### 3.6 Settings, storage, sync
 
@@ -141,10 +204,18 @@ Jammarly therefore keeps its own per-field undo stack (text snapshot plus the ap
   when one exists (Gmail draft id, Docs document id, thread id in the URL) and `userSalt` is a random value stored in
   the profile document. It keys dismissal memory and the `docId` of feedback events [R09 §1.12].
 * `profile` is the shared **profile document** (`ProfileDocument` in `@jammarly/shared/profile`): settings that
-  make sense across devices (goals, categories, dialect, custom instructions, dictionary, muted rules, site
-  overrides, voice profile, API key encrypted with a per-account key). Scalars are last-writer-wins registers with
-  hybrid logical clocks; sets are add-wins observed-remove sets [R07 §9.2]. The same merge code runs on the device
-  and the server.
+  make sense across devices (goals, categories, dialect, custom instructions, models and engine mode, privacy consent,
+  dictionary, muted rules, site overrides, voice profiles, learned state). Scalars are last-writer-wins registers
+  keyed by fixed-width hybrid logical clocks; sets are add-wins observed-remove sets [R07 §9.2]. Device ops are
+  typed (`LwwPath`, `SetPath`); `voice` and `learning` ops are accepted only from the owner session or the cron, and
+  the **learning section is server-authoritative when paired**: the worker folds events into a device-local shadow
+  for immediate effect and replaces it with `profile.learning` on every successful poll (unpaired devices fold into
+  the profile copy directly). The same merge code runs on the device and the server.
+* **The Anthropic API key is per device**, entered in the options page and never synced or distributed by the web
+  app. The learning job uses a server-side key (`ANTHROPIC_API_KEY` env var, or a key entered on the dashboard and
+  stored encrypted at rest with a key derived from `SESSION_SECRET`), which never reaches devices. When paired, the
+  profile's `mode`, `model` and `fastModel` are authoritative and the options page writes them as ops.
+* Pages other than the worker (side panel, popup, options) receive `PublicDeviceSettings`, never the key or token.
 * When paired, the worker polls `GET /api/profile/version` (a tiny cached document) every 5 minutes while active and
   every 15 minutes when idle (`chrome.alarms`), fetches the body only when the version changed, and pushes local ops
   with `POST /api/profile/ops` two seconds after a change (at most 12 profile writes per day); `412` triggers a merge
@@ -205,23 +276,49 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
   fold compacts event batches into counters and deletes the raw blobs. Budget target: ≈ 1,200 advanced and ≈ 5,000
   simple operations per month for three devices, inside the Hobby caps [R09 §1.11].
 * **Pairing:** the dashboard calls `chrome.runtime.sendMessage(EXTENSION_ID, {type:'jammarly.pair', pairingId, code})`
-  (`externally_connectable` pinned to the production origin); fallback: the user types the code into the options
-  page [R07 §9.4].
+  (`externally_connectable` pinned to the production origin); the worker accepts the message only when
+  `sender.origin === APP_ORIGIN` (compiled into the build) and redeems against that origin, ignoring any origin in the
+  message. Fallback: the user types the code into the options page [R07 §9.4]. `APP_ORIGIN` is the production
+  **domain alias** (`https://<project>.vercel.app` or a custom domain), never `VERCEL_URL`; Deployment Protection stays
+  at Standard. The build fails unless `externally_connectable.matches` equals exactly `[APP_ORIGIN + '/*']`.
+* **Clocks and ops:** HLCs are `<13-digit ms>-<4-digit counter>-<deviceId>`; the server rejects ops more than 5
+  minutes ahead of its clock (`hlc_skew`), rejects paths outside the allowlist (`op_not_allowed`), validates values with
+  the shared zod schemas (`schema_invalid`), and caps profile writes at 10 per hour per device (`quota_exceeded`).
 * **API:** `/api/auth/login|logout`, `/api/devices` (list, revoke, `pair/start`, `pair/redeem`, `rotate`),
-  `/api/profile` (GET with ETag, PUT with If-Match, `ops` merge), `/api/events`, `/api/learning/summary|run`,
-  `/api/cron/synthesize` (`CRON_SECRET`), `/api/health`. CORS allowlist = pinned `chrome-extension://` ids.
+  `/api/profile` (GET with ETag, PUT with If-Match, `ops` merge, `version` tiny cached document), `/api/events`,
+  `/api/learning/summary|run|status`, `/api/learning/data` (DELETE: every server artifact), `/api/export`,
+  `/api/server-key` (status; set from the dashboard), `/api/cron/synthesize?ctx=messages|documents` (`CRON_SECRET`),
+  `/api/health` (with the month's Blob operation counters so the dashboard warns at 80 %). Errors use `ApiErrorCode`.
+  CORS: echo `Access-Control-Allow-Origin` only for `Origin ∈ EXTENSION_IDS`, `Vary: Origin`, never credentials;
+  cookie-authenticated routes reject requests with an extension `Origin`. The server answers `304` for an
+  `If-None-Match` matching an ETag it wrote or read within 60 s without touching Blob.
+* **Privacy:** consent (`settings.privacy`) is synced and enforced server-side: when `storeSnippets` is off the
+  upload route strips `original`/`replacement`/`final`/`sentence` and samples regardless of what a device sent; the
+  daily fold purges events past `retentionDays`; "Delete all learning data" enumerates events, samples, snapshots,
+  runs, learned dictionary entries and voice profiles; export returns the same set as JSON.
 * **Pages:** Overview, Tuning (goals, categories, custom instructions, dictionary, muted rules, site overrides,
   models and API key), Voice (profile per context: view, edit, lock traits, regenerate, history), Learning
   (acceptance by category, rule table with overrides, "what Jammarly learned"), Devices, Privacy, and **Check text**
   (paste → check → Accept all → copy, the universal fallback for canvas apps; the side panel offers the same).
 * **Contexts:** events and scopes use `email | chat | doc | social | code | other`; voice profiles use
   `messages` (email, chat, social) and `documents` (doc, other); `code` gets no voice profile [R09 §1.13].
-* **Learning job:** folds events into counters, runs the deterministic learner, synthesizes the voice profile with
-  Claude (`claude-opus-5-5`, structured output, streaming, effort medium), lints it so it can never relax
-  correctness, stores a new version and a snapshot.
-* **Deployment:** Vercel project `jammarly-web` linked to the GitHub repo with root directory `apps/web`; env vars
-  `SESSION_SECRET`, `OWNER_PASSWORD_HASH`, `CRON_SECRET`, `APP_ORIGIN`, `EXTENSION_IDS`; the Anthropic key is entered
-  in the dashboard and stored encrypted in the profile document.
+* **Learning job:** two cron entries (`?ctx=messages` at 03:00 UTC, `?ctx=documents` at 04:00 UTC); the first also
+  folds events into counters and runs the deterministic learner. Each handler is idempotent and resumable: it writes
+  `users/owner/runs/<date>-<ctx>.json` with stage checkpoints (the persistent log, since Hobby keeps runtime logs for
+  an hour), sets the SDK `timeout` from `getDeadline()` with `maxRetries: 0`, records `partial` and stops cleanly when
+  under 20 s remain, uses `max_tokens ≥ 8000` (thinking is billed as output), and on `refusal` or `max_tokens` keeps the
+  previous profile version and appends the reason to `learning.history`. Synthesis uses `claude-opus-5-5` with
+  structured output and effort medium; the result is linted (regex plus a Haiku classifier) so it can never relax
+  correctness, inject instructions, URLs, addresses or tool talk, and `renderVoiceBlock` is the only renderer on
+  device and server (sanitizes and caps every field). Runs are skipped when fewer than 20 new events or 1,500 new
+  sampled words arrived. "Run now" on the dashboard (`POST /api/learning/run`, ≤ 3/day) is the manual retry.
+* **Deployment (provisioning order, team-scoped API):** create project `jammarly-web` linked to
+  `Julian88Tex/jammarly` with root directory `apps/web` and Fluid Compute; create the private Blob store bound to it;
+  set env vars `SESSION_SECRET`, `OWNER_PASSWORD_HASH`, `CRON_SECRET` (sensitive, production + preview),
+  `APP_ORIGIN` (the production alias), `EXTENSION_IDS` (plain) and optionally `ANTHROPIC_API_KEY` (sensitive,
+  server-only; the dashboard can set it instead); add one WAF rate-limit rule on `/api/auth/login` and
+  `/api/devices/pair/*`; create a production deployment from the PR branch until it merges; then build the extension
+  with `JAMMARLY_APP_ORIGIN` set to the alias and record the extension id in `EXTENSION_IDS`.
 
 ## 5. Testing
 

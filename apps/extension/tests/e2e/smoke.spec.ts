@@ -4,7 +4,7 @@ test.describe('extension smoke', () => {
   test('loads, injects the content script and answers a ping from the service worker', async ({ page, fixtureUrl }) => {
     await page.goto(fixtureUrl('textarea.html'));
     await expect(page.locator('html')).toHaveAttribute('data-jammarly', 'loaded');
-    await expect(page.locator('html')).toHaveAttribute('data-jammarly-sw', JSON.stringify({ type: 'ok' }));
+    await expect(page.locator('html')).toHaveAttribute('data-jammarly-sw', JSON.stringify({ ok: true, type: 'ok' }));
   });
 
   test('injects into same-origin iframes', async ({ page, fixtureUrl }) => {

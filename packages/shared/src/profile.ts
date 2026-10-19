@@ -8,7 +8,11 @@ import type { Dialect, StyleDecisions, SuggestionCategory, WritingContext, Writi
 
 export const PROFILE_SCHEMA_VERSION = 1 as const;
 
-/** "wallMs-counter-deviceId", string-comparable. */
+/**
+ * Hybrid logical clock "<13-digit wallMs>-<4-digit zero-padded counter>-<deviceId>". Fixed widths make plain
+ * string comparison correct; compareHlc() in ./hlc.ts is the canonical comparison. The server rejects ops whose
+ * wall time is more than 5 minutes ahead of its own clock (hlc_skew) and keeps its clock >= every value it sees.
+ */
 export type Hlc = string;
 
 export interface Lww<T> {
@@ -79,6 +83,12 @@ export interface VoiceSettings {
   notes: string;
 }
 
+export interface PrivacySettings {
+  storeSnippets: boolean;
+  retentionDays: 30 | 90 | 365;
+  learningEnabled: boolean;
+}
+
 export interface SiteOverride {
   context?: WritingContext;
   formality?: WritingGoals['formality'];
@@ -117,8 +127,6 @@ export interface ProfileDocument {
     categories: Lww<Record<SuggestionCategory, boolean>>;
     customInstructions: Lww<string>;
     styleDecisions: Lww<StyleDecisions>;
-    /** AES-GCM ciphertext (base64) of the Anthropic API key, keyed by the account's encryption key; "" when unset. */
-    apiKeyEncrypted: Lww<string>;
     mode: Lww<'hybrid' | 'quality' | 'economy'>;
     model: Lww<string>;
     fastModel: Lww<string>;
@@ -126,6 +134,11 @@ export interface ProfileDocument {
     userSalt: Lww<string>;
     /** Hosts where snippets are never stored (suffix match). */
     privateSites: Lww<string[]>;
+    /** Consent, synced and enforced server-side: snippets are stripped on upload when storeSnippets is false. */
+    privacy: Lww<PrivacySettings>;
+    /** Per-site "check here anyway" overrides of a site's opt-out attribute. */
+    ignoreOptOutHosts: Lww<string[]>;
+    checkOptedOutFields: Lww<boolean>;
   };
   dictionary: OrSetElement<string>[];
   rules: {
@@ -159,11 +172,38 @@ export interface ProfileDocument {
   };
 }
 
-/** A single mutation, applied with the merge rules on both device and server. */
+/** LWW register paths a device may set. */
+export type LwwPath =
+  | 'settings.goals'
+  | 'settings.dialect'
+  | 'settings.categories'
+  | 'settings.customInstructions'
+  | 'settings.styleDecisions'
+  | 'settings.mode'
+  | 'settings.model'
+  | 'settings.fastModel'
+  | 'settings.userSalt'
+  | 'settings.privateSites'
+  | 'settings.privacy'
+  | 'settings.ignoreOptOutHosts'
+  | 'settings.checkOptedOutFields'
+  | 'voice.settings'
+  | `rules.weights.${string}`
+  | `sites.overrides.${string}`;
+
+/** OR-set paths a device may add to / remove from. */
+export type SetPath = 'dictionary' | 'rules.muted' | 'sites.disabled';
+
+/**
+ * A single mutation, applied with the merge rules on both device and server.
+ * 'voice' and 'learning' ops are accepted only from the owner session or the cron (the ops route rejects them
+ * from device tokens); devices receive those sections through GET /api/profile. An unpaired device applies
+ * them to its local copy only.
+ */
 export type ProfileOp =
-  | { op: 'set'; path: string; value: unknown; hlc: Hlc }
-  | { op: 'add'; path: string; value: unknown; hlc: Hlc }
-  | { op: 'remove'; path: string; value: unknown; hlc: Hlc }
+  | { op: 'set'; path: LwwPath; value: unknown; hlc: Hlc }
+  | { op: 'add'; path: SetPath; value: string; hlc: Hlc }
+  | { op: 'remove'; path: SetPath; value: string; hlc: Hlc }
   | { op: 'voice'; context: VoiceContext; profile: VoiceProfile; hlc: Hlc }
   | { op: 'learning'; patch: Partial<ProfileDocument['learning']>; hlc: Hlc };
 
@@ -192,7 +232,7 @@ export function emptyVoiceProfile(context: VoiceContext): VoiceProfile {
   };
 }
 
-export const ZERO_HLC: Hlc = '0000000000000-0-init';
+export const ZERO_HLC: Hlc = '0000000000000-0000-init';
 
 export function defaultProfile(now = '1970-01-01T00:00:00.000Z'): ProfileDocument {
   const z = ZERO_HLC;
@@ -207,12 +247,14 @@ export function defaultProfile(now = '1970-01-01T00:00:00.000Z'): ProfileDocumen
       categories: { value: { correctness: true, clarity: true, engagement: true, delivery: true }, hlc: z },
       customInstructions: { value: '', hlc: z },
       styleDecisions: { value: {}, hlc: z },
-      apiKeyEncrypted: { value: '', hlc: z },
       mode: { value: 'hybrid', hlc: z },
       model: { value: 'claude-opus-5-5', hlc: z },
       fastModel: { value: 'claude-haiku-5-5', hlc: z },
       userSalt: { value: '', hlc: z },
       privateSites: { value: [], hlc: z },
+      privacy: { value: { storeSnippets: true, retentionDays: 90, learningEnabled: true }, hlc: z },
+      ignoreOptOutHosts: { value: [], hlc: z },
+      checkOptedOutFields: { value: false, hlc: z },
     },
     dictionary: [],
     rules: { muted: [], weights: {} },

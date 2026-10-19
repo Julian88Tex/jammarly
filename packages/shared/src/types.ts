@@ -26,9 +26,11 @@ export const CATEGORY_TO_GROUP: Record<SuggestionCategory, AcceptGroup> = {
 };
 
 /**
- * Tier A: mechanical, unambiguous correctness fixes (auto-apply safe).
- * Tier B: style/clarity/delivery span edits that preserve meaning.
- * Tier C: sentence rewrites (kind 'rewrite') with alternatives; never bulk-applied.
+ * Tier A: mechanical, unambiguous correctness fixes: category correctness, kind replace|delete|insert,
+ *         severity error, confidence >= 0.85, meaningPreserving, autoApplySafe, anchor exact, within one sentence.
+ * Tier B: clarity/engagement/delivery span edits with confidence >= 0.7 and meaningPreserving.
+ * Tier C: rewrites (kind 'rewrite'), flags, and anything with meaningPreserving === false; never bulk-applied.
+ * "Accept all grammar" applies A; "Accept all style" applies B; "Accept everything" applies A ∪ B and leaves C pending.
  */
 export type SuggestionTier = 'A' | 'B' | 'C';
 
@@ -47,8 +49,11 @@ export interface TextRange {
 /** Learned visibility state attached by the service worker after the deterministic learner runs. */
 export type SuggestionLearnedState = 'active' | 'demoted' | 'probe';
 
+/** How the model's verbatim anchor was located: exact string match, or a length-preserving normalized match. */
+export type AnchorQuality = 'exact' | 'normalized';
+
 export interface Suggestion {
-  /** Stable id for the suggestion's lifetime in a field session. */
+  /** Stable across passes and re-checks: hash(fieldId, blockHash, fingerprint, ordinalInBlock). */
   id: string;
   category: SuggestionCategory;
   /** Controlled vocabulary from the engine contract, e.g. "spelling", "subject_verb_agreement", "wordy_phrase", "hedging". */
@@ -57,7 +62,8 @@ export interface Suggestion {
   kind: SuggestionKind;
   source: SuggestionSource;
   tier: SuggestionTier;
-  /** Absolute offsets into the field text at `version`. Edits replace exactly this range. */
+  anchor: AnchorQuality;
+  /** Absolute offsets into the field text at the version the suggestion is currently rebased to. */
   range: TextRange;
   /** Hover target. Equals `range` except for pure insertions, where it covers the adjacent word. */
   highlight: TextRange;
@@ -75,9 +81,13 @@ export interface Suggestion {
   confidence: number;
   meaningPreserving: boolean;
   autoApplySafe: boolean;
-  /** Block (paragraph) the suggestion came from and the hash of its text at request time. */
+  /** Block (paragraph) the suggestion came from ("b<index>") and the hash of its text at request time. */
   blockId: string;
   blockHash: string;
+  /** Ids of span suggestions inside this rewrite's sentence, or of the rewrite a span sits inside. */
+  conflictsWith: string[];
+  /** A rewrite whose sentence was edited underneath it; the card says "sentence changed" until re-checked. */
+  stale: boolean;
   /** Engine provenance. */
   model?: string;
   promptVersion: string;
@@ -143,7 +153,8 @@ export type StyleDecisions = Record<string, string>;
 // Checking
 // ---------------------------------------------------------------------------
 
-export type FieldKind = 'textarea' | 'input' | 'contenteditable' | 'gdocs';
+/** 'scratch' is the side panel's own text area (paste -> check -> accept all -> copy), used for canvas apps. */
+export type FieldKind = 'textarea' | 'input' | 'contenteditable' | 'gdocs' | 'scratch';
 
 export interface Paragraph {
   /** Index within the document, 0-based. */
@@ -151,37 +162,36 @@ export interface Paragraph {
   /** Offset of the paragraph's first character in the full plain text. */
   start: number;
   text: string;
-  /** Hash of `text` only. The engine combines it with prompt/model/goals into a cache key. */
+  /** Hash of `text` only. The engine combines it with the prompt configuration into a cache key. */
   hash: string;
 }
 
 export type CheckPass = 'rules' | 'fast' | 'deep';
 
+/** Ranks passes so the worker keeps the best result per block (deep > fast > rules). */
+export const PASS_RANK: Record<CheckPass, number> = { rules: 0, fast: 1, deep: 2 };
+
+/**
+ * Field facts only. The service worker merges device settings, the profile document and learned state into
+ * the prompt; the content script never carries profile-derived inputs.
+ */
 export interface CheckRequest {
-  /** Unique per field instance; assigned by the content script. */
+  /** Unique per field instance; assigned by the content script (or "panel:<n>" for scratch checks). */
   fieldId: string;
-  /** Monotonic text version; results for an older version are rebased or discarded. */
+  /** Monotonic text version; results for an older version are rebased stepwise or discarded. */
   version: number;
   /** Full plain text of the field. */
   text: string;
   /** Paragraph split of `text` (see splitParagraphs). */
   blocks: Paragraph[];
-  /** Blocks that changed since the last check (hashes); empty means "all". */
-  dirtyBlockHashes: string[];
+  /** Block hashes that changed since the last check, or 'all'. */
+  dirtyBlockHashes: string[] | 'all';
   pass: CheckPass;
-  goals: WritingGoals;
-  dialect: Dialect;
-  categories: SuggestionCategory[];
   host: string;
   context: WritingContext;
   fieldKind: FieldKind;
-  styleDecisions: StyleDecisions;
-  /** Words never flagged as misspelled (dictionary + protected terms). */
-  protectedTerms: string[];
-  /** Free-text instructions from the user's tuning page (max 2000 chars). */
-  customInstructions: string;
-  /** Rule ids the learner has muted for this host/context. */
-  mutedRules: string[];
+  /** DOM-derived ranges that must never be flagged or edited (mentions, chips, quoted replies, signatures, zero-width). */
+  protectedRanges: TextRange[];
 }
 
 export interface TokenUsage {
@@ -192,12 +202,21 @@ export interface TokenUsage {
   costUsd: number;
 }
 
+export interface CheckedBlock {
+  hash: string;
+  /** Best pass available for this block after supersession. */
+  pass: CheckPass;
+  model?: string;
+  fromCache: boolean;
+}
+
 export interface CheckResult {
   fieldId: string;
   version: number;
   pass: CheckPass;
-  /** Suggestions for the whole field (cached blocks included), anchored to `version`. */
+  /** Merged best-per-block suggestions for the whole field, anchored to `version`, dismissal-filtered. */
   suggestions: Suggestion[];
+  /** Only present when the request covered every block (so the tone describes the whole field). */
   tone?: ToneAnalysis;
   consistency?: ConsistencyNote[];
   score?: WritingScore;
@@ -206,14 +225,14 @@ export interface CheckResult {
   usage?: TokenUsage;
   model?: string;
   error?: CheckError;
-  /** Block hashes that were checked by this pass (cached or fresh). */
-  blockHashes: string[];
+  blocks: CheckedBlock[];
 }
 
 export type CheckErrorCode =
   | 'no-api-key'
   | 'auth'
   | 'rate-limit'
+  | 'spend-cap'
   | 'network'
   | 'refusal'
   | 'truncated'
@@ -245,7 +264,7 @@ export interface EngineSuggestion {
   /** 1-3 verbatim words before/after `original` ("" at a block edge). */
   prefix: string;
   suffix: string;
-  /** 1-based index of this exact `original` string counting from the block start. */
+  /** 1-based index of this exact `original` string counting from the block start (locateSpan takes occurrence - 1). */
   occurrence: number;
   replacement: string;
   alternatives: string[];
@@ -269,6 +288,16 @@ export interface EngineOutput {
   };
 }
 
+/**
+ * What the worker caches per (cache key, block hash): block-relative, so a paragraph that moves in the field
+ * still serves correct offsets. Absolute `range`/`highlight`, `blockId` and `id` are derived at serve time.
+ */
+export type CachedSuggestion = Omit<Suggestion, 'id' | 'range' | 'highlight' | 'blockId' | 'conflictsWith' | 'stale' | 'learnedState'> & {
+  rel: TextRange;
+  relHighlight: TextRange;
+  ordinalInBlock: number;
+};
+
 // ---------------------------------------------------------------------------
 // Edits (applying suggestions)
 // ---------------------------------------------------------------------------
@@ -279,19 +308,47 @@ export interface Edit {
   replacement: string;
 }
 
+export type EditRung = 'native' | 'execCommand' | 'beforeinput' | 'paste' | 'splice' | 'gdocs';
+
+export interface EditOutcome {
+  status: 'applied' | 'reverted' | 'mismatch' | 'unsupported' | 'composing';
+  rung: EditRung | null;
+  /** Field text after the attempt (verified immediately, at the next frame and at +150 ms). */
+  text: string;
+}
+
+export interface BatchEditOutcome {
+  applied: Edit[];
+  skipped: { edit: Edit; reason: EditOutcome['status'] }[];
+  text: string;
+  /** How many native undo steps the host editor recorded (execCommand: one per edit; splice: 0). */
+  nativeUndoSteps: number;
+}
+
 export interface AcceptAllScope {
   group: AcceptGroup | 'all';
   /** Optional explicit subset chosen in the preview. */
   suggestionIds?: string[];
 }
 
+/** One undoable transaction. Undo applies the inverse edits through the same adapter ladder. */
+export interface ApplyTransaction {
+  id: string;
+  fieldId: string;
+  at: string;
+  /** Edits as applied, with post-apply ranges (replacement now sits at `range`). */
+  edits: Edit[];
+  appliedIds: string[];
+  /** Ids reverted individually or by a native undo since. */
+  revertedIds: string[];
+}
+
 export interface ApplyReport {
   fieldId: string;
   appliedIds: string[];
   skippedIds: string[];
-  /** Tier-C rewrites left pending by "Accept everything". */
+  /** Tier-C rewrites left pending by "Accept everything" (marked stale and re-checked). */
   pendingRewriteIds: string[];
-  /** Undo token for the transaction. */
   transactionId: string;
 }
 
@@ -304,6 +361,11 @@ export type EngineProvider = 'anthropic' | 'mock';
 /** hybrid: Haiku while typing, Opus when idle. quality: Opus only. economy: Haiku only. */
 export type EngineMode = 'hybrid' | 'quality' | 'economy';
 
+/**
+ * Per-device state. The Anthropic API key is entered on every device and never synced or distributed
+ * by the web app. Engine mode and model ids here apply only while unpaired; once paired the profile's
+ * settings are authoritative and overwrite them on first sync.
+ */
 export interface DeviceSettings {
   enabled: boolean;
   provider: EngineProvider;
@@ -312,14 +374,12 @@ export interface DeviceSettings {
   model: string;
   /** Fast-pass model id. */
   fastModel: string;
-  /** Used when the profile document carries no key (unpaired installs). */
+  /** Anthropic API key for this device. Stored with setAccessLevel('TRUSTED_CONTEXTS') when available. */
   apiKey: string;
   debounceMs: number;
   showFloatingButton: boolean;
   showUnderlines: boolean;
   colorblindMode: boolean;
-  /** Keep <=200-char redacted snippets in feedback events (needed for voice learning). */
-  storeSnippets: boolean;
   /** Google Docs inline mode: 'auto' enables the bridge only when Docs exposes the annotated-text API for our id. */
   gdocsInline: 'auto' | 'off';
   /** Pairing with the web app; null when unpaired. */
@@ -327,12 +387,25 @@ export interface DeviceSettings {
 }
 
 export interface DevicePairing {
+  /** Compiled production origin of the web app; the worker verifies sender.origin against this value. */
   appOrigin: string;
   deviceId: string;
   /** Bearer token "jm1.<deviceId>.<secret>". */
   token: string;
   pairedAt: string;
-  lastSyncAt?: string;
+}
+
+/** Sync bookkeeping persisted next to the profile in chrome.storage.local. */
+export interface SyncState {
+  etag: string;
+  version: number;
+  lastPollAt: string;
+  lastPushAt: string;
+  lastEventUploadAt: string;
+  pendingOps: ProfileOp[];
+  /** 'paused' when the server reported quota exhaustion; the UI shows "sync paused". */
+  status: 'ok' | 'offline' | 'paused' | 'revoked';
+  eventUploadsToday: number;
 }
 
 export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
@@ -346,7 +419,6 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   showFloatingButton: true,
   showUnderlines: true,
   colorblindMode: false,
-  storeSnippets: true,
   gdocsInline: 'auto',
   pairing: null,
 };
@@ -361,22 +433,31 @@ export interface EffectiveConfig {
   enabledOnHost: boolean;
   host: string;
   context: WritingContext;
+  mode: EngineMode;
   goals: WritingGoals;
   dialect: Dialect;
   categories: Record<SuggestionCategory, boolean>;
   debounceMs: number;
+  /** Multipliers from the site profile (Superhuman/Slashy slow the cadence). */
+  fastPassIdleMs: number;
+  deepPassIdleMs: number;
   showFloatingButton: boolean;
   showUnderlines: boolean;
   colorblindMode: boolean;
   /** Shortcut-heavy hosts (Superhuman, Slashy, Gmail): the card never claims single-letter shortcuts. */
   shortcutSafeMode: boolean;
+  /** Honour the field even when the site set an opt-out attribute (Slack sets data-gramm="false"). */
+  ignoreSiteOptOut: boolean;
+  /** Also check fields that sites opted out (global user setting). */
+  checkOptedOutFields: boolean;
   mutedRules: string[];
   demotedRules: string[];
   dictionary: string[];
   styleDecisions: StyleDecisions;
+  storeSnippets: boolean;
   /** The engine is usable (key present or mock provider). */
   engineReady: boolean;
-  /** Google Docs: id to announce to the annotated-canvas API (our own id; a dev build may override via env). */
+  /** Google Docs: our own id, used by the isolated-world adapter to call the annotated-text API. */
   gdocsAnnounceId: string;
   gdocsInline: 'auto' | 'off';
   /** Random per-account salt used to derive stable, unlinkable document keys (docKey). */
@@ -404,6 +485,8 @@ export interface FieldState {
   tone?: ToneAnalysis;
   score?: WritingScore;
   status: FieldStatus;
+  /** Highest pass that has covered every block ('rules' until the engine answers). */
+  checkedBy: CheckPass;
   error?: CheckError;
   /** The focused field in its tab. */
   active: boolean;
@@ -418,23 +501,28 @@ export interface FieldState {
 
 export type PortRole = 'content' | 'sidepanel';
 
-/** Sent by content scripts to the worker. */
+/** Sent by content scripts to the worker over a long-lived port. */
 export type ContentToWorker =
-  | { type: 'hello'; role: 'content'; host: string; href: string; frameToken: string }
-  | { type: 'field-attached'; fieldId: string; fieldKind: FieldKind; label: string }
+  | { type: 'hello'; role: 'content'; host: string; href: string; frameToken: string; extVersion: string }
+  | { type: 'field-attached'; fieldId: string; fieldKind: FieldKind; label: string; docKey: string }
   | { type: 'field-detached'; fieldId: string }
   | { type: 'check'; request: CheckRequest }
   | { type: 'cancel'; fieldId: string }
   | { type: 'field-state'; state: Omit<FieldState, 'tabId' | 'frameId'> }
   | { type: 'feedback'; events: FeedbackEventInput[] }
-  | { type: 'open-side-panel' }
+  | { type: 'voice-samples'; samples: VoiceSample[] }
+  | { type: 'dismiss'; fieldId: string; suggestionId: string; fingerprint: string; rule: string; docKey: string; reason?: DismissReason }
+  | { type: 'add-to-dictionary'; word: string }
+  | { type: 'mute-rule'; rule: string; scope: 'host' | 'global' }
   | { type: 'toggle-host'; enabled: boolean }
-  | { type: 'apply-report'; report: ApplyReport };
+  | { type: 'apply-report'; report: ApplyReport }
+  /** Sent every 20 s while a request is outstanding to keep the worker alive. */
+  | { type: 'ping' };
 
 /** Sent by the worker to content scripts. */
 export type WorkerToContent =
   | { type: 'config'; config: EffectiveConfig }
-  | { type: 'check-progress'; fieldId: string; version: number; pass: CheckPass; stage: 'queued' | 'sent' | 'streaming' }
+  | { type: 'check-progress'; fieldId: string; version: number; pass: CheckPass; stage: 'queued' | 'sent' | 'streaming' | 'deep-scheduled' }
   | { type: 'check-result'; result: CheckResult }
   | { type: 'panel-action'; action: PanelAction }
   | { type: 'ping' };
@@ -443,19 +531,29 @@ export type WorkerToContent =
 export type PanelToWorker =
   | { type: 'hello'; role: 'sidepanel'; windowId?: number }
   | { type: 'panel-action'; action: PanelAction }
+  | { type: 'check'; request: CheckRequest }
+  | { type: 'cancel'; fieldId: string }
   | { type: 'set-goals'; goals: WritingGoals }
-  | { type: 'set-categories'; categories: Record<SuggestionCategory, boolean> };
+  | { type: 'set-categories'; categories: Record<SuggestionCategory, boolean> }
+  | { type: 'dismiss'; fieldId: string; suggestionId: string; fingerprint: string; rule: string; docKey: string; reason?: DismissReason }
+  | { type: 'add-to-dictionary'; word: string }
+  | { type: 'mute-rule'; rule: string; scope: 'host' | 'global'; host?: string };
 
-/** Sent by the worker to the side panel. */
+/** Sent by the worker to the side panel. Never carries secrets. */
 export type WorkerToPanel =
   | { type: 'fields'; fields: FieldState[] }
   | { type: 'field-state'; state: FieldState }
   | { type: 'field-removed'; fieldId: string }
-  | { type: 'config'; config: EffectiveConfig; settings: DeviceSettings };
+  | { type: 'check-progress'; fieldId: string; version: number; pass: CheckPass; stage: 'queued' | 'sent' | 'streaming' | 'deep-scheduled' }
+  | { type: 'check-result'; result: CheckResult }
+  | { type: 'config'; config: EffectiveConfig; settings: PublicDeviceSettings; sync: SyncState | null };
+
+/** Device settings minus secrets, safe for pages other than the worker. */
+export type PublicDeviceSettings = Omit<DeviceSettings, 'apiKey' | 'pairing'> & { hasApiKey: boolean; paired: boolean; appOrigin: string | null };
 
 export type PortMessage = ContentToWorker | WorkerToContent | PanelToWorker | WorkerToPanel;
 
-/** Actions the panel (or a command) asks a content script to perform. */
+/** Actions the panel (or a command) asks a content script to perform on a field. */
 export type PanelAction =
   | { type: 'accept'; fieldId: string; suggestionId: string; alternativeIndex?: number }
   | { type: 'dismiss'; fieldId: string; suggestionId: string; reason?: DismissReason }
@@ -463,11 +561,11 @@ export type PanelAction =
   | { type: 'focus'; fieldId: string; suggestionId: string }
   | { type: 'recheck'; fieldId: string }
   | { type: 'undo'; fieldId: string; transactionId?: string }
-  | { type: 'add-to-dictionary'; fieldId: string; word: string }
-  | { type: 'mute-rule'; fieldId: string; rule: string; scope: 'host' | 'global' };
+  | { type: 'revert'; fieldId: string; suggestionId: string };
 
 // ---------------------------------------------------------------------------
-// Request/response messaging (options, popup -> worker) via chrome.runtime.sendMessage
+// Request/response messaging (options, popup, content click handlers -> worker) via chrome.runtime.sendMessage.
+// 'open-side-panel' must travel this way from a click handler so the user gesture reaches sidePanel.open().
 // ---------------------------------------------------------------------------
 
 export type RuntimeRequest =
@@ -476,7 +574,7 @@ export type RuntimeRequest =
   | { type: 'get-profile' }
   | { type: 'profile-ops'; ops: ProfileOp[] }
   | { type: 'test-api-key'; apiKey: string }
-  | { type: 'pair'; appOrigin: string; pairingId: string; code: string }
+  | { type: 'pair'; pairingId: string; code: string }
   | { type: 'unpair' }
   | { type: 'sync-now' }
   | { type: 'learn-voice-now'; context: VoiceContext }
@@ -484,18 +582,20 @@ export type RuntimeRequest =
   | { type: 'get-usage' }
   | { type: 'get-host-status'; host: string }
   | { type: 'set-host-enabled'; host: string; enabled: boolean }
-  | { type: 'open-side-panel'; tabId?: number }
+  | { type: 'open-side-panel' }
+  | { type: 'get-sync-state' }
   | { type: 'ping' };
 
 export type RuntimeResponse =
-  | { ok: true; type: 'settings'; settings: DeviceSettings }
+  | { ok: true; type: 'settings'; settings: PublicDeviceSettings }
   | { ok: true; type: 'profile'; profile: ProfileDocument }
   | { ok: true; type: 'api-key-test'; valid: boolean; model?: string; message?: string }
-  | { ok: true; type: 'paired'; pairing: DevicePairing }
+  | { ok: true; type: 'paired'; deviceId: string; appOrigin: string }
   | { ok: true; type: 'learning-summary'; summary: LearningSummary }
   | { ok: true; type: 'usage'; usage: UsageTotals }
   | { ok: true; type: 'host-status'; host: string; enabled: boolean }
   | { ok: true; type: 'voice'; profile: VoiceProfile }
+  | { ok: true; type: 'sync-state'; sync: SyncState | null }
   | { ok: true; type: 'ok' }
   | { ok: false; error: { code: string; message: string } };
 
@@ -506,5 +606,5 @@ export interface UsageTotals {
 
 // Re-exported so this file remains the single import for message contracts.
 import type { ProfileDocument, ProfileOp, VoiceContext, VoiceProfile } from './profile';
-import type { DismissReason, FeedbackEventInput, LearningSummary } from './learning';
-export type { ProfileDocument, ProfileOp, VoiceContext, VoiceProfile, DismissReason, FeedbackEventInput, LearningSummary };
+import type { DismissReason, FeedbackEventInput, LearningSummary, VoiceSample } from './learning';
+export type { ProfileDocument, ProfileOp, VoiceContext, VoiceProfile, DismissReason, FeedbackEventInput, LearningSummary, VoiceSample };
