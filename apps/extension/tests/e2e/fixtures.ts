@@ -42,12 +42,18 @@ async function startFixtureServer(): Promise<{ url: string; close: () => Promise
       res.end('not found');
     }
   });
+  server.keepAliveTimeout = 1000;
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
   if (!addr || typeof addr === 'string') throw new Error('no address');
   return {
     url: `http://127.0.0.1:${addr.port}/`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        // Chromium keeps HTTP keep-alive sockets open; server.close() alone would wait for them.
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }
 

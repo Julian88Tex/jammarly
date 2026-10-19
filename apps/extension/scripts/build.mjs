@@ -38,7 +38,7 @@ const common = {
     'process.env.NODE_ENV': JSON.stringify(dev ? 'development' : 'production'),
     'globalThis.__JAMMARLY_DEV__': JSON.stringify(dev),
   },
-  alias: { '@shared': path.join(root, 'src/shared') },
+  
   outdir: dist,
   outbase: 'src',
   entryPoints: Object.values(existingEntries).map((p) => path.join(root, p)),

@@ -64,7 +64,7 @@
  * {@link fromDomPosition}).
  */
 
-import type { TextRange } from '@shared/types';
+import type { TextRange } from '@jammarly/shared/types';
 
 // ---------------------------------------------------------------------------
 // Public types

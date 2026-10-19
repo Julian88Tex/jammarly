@@ -1,31 +1,21 @@
 {
   "name": "jammarly",
   "version": "0.1.0",
-  "description": "A Grammarly-class writing assistant Chrome extension powered by Claude, with hover-to-fix suggestions and one-click Accept All.",
+  "description": "Jammarly: a Grammarly-class writing assistant Chrome extension powered by Claude, with a companion web app for sync, tuning and tone learning.",
   "private": true,
   "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "watch": "node scripts/build.mjs --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace apps/extension",
     "check": "npm run typecheck && npm run test && npm run build",
-    "zip": "node scripts/zip.mjs"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "@anthropic-ai/sdk": "0.135.0",
-    "zod": "4.6.7"
+    "extension": "npm --workspace apps/extension run",
+    "web": "npm --workspace apps/web run"
   },
   "devDependencies": {
-    "@playwright/test": "1.56.1",
-    "@types/chrome": "0.3.5",
-    "@types/node": "26.6.5",
-    "esbuild": "0.28.2",
-    "jsdom": "30.1.3",
-    "typescript": "5.9.3",
-    "vitest": "5.0.5"
-  }
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
 }

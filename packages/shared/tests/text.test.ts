@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Edit, Suggestion, SuggestionCategory, SuggestionSource, TextRange } from '../../src/shared/types';
+import type { Edit, Suggestion, SuggestionCategory, SuggestionSource, TextRange } from '../src/types';
 import {
   applyEdits,
   compareSuggestionPriority,
@@ -20,7 +20,7 @@ import {
   splitParagraphs,
   splitSentences,
   stripUrlsAndCode,
-} from '../../src/shared/text';
+} from '../src/text';
 
 // ---------------------------------------------------------------------------
 // helpers
