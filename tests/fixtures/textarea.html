@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: textarea and inputs</title>
+<style>
+  body { font-family: Georgia, serif; font-size: 16px; line-height: 1.5; margin: 40px; }
+  textarea { width: 520px; height: 180px; padding: 12px; border: 2px solid #ccc; box-sizing: border-box; font: inherit; }
+  input[type=text] { width: 400px; padding: 8px; font: inherit; }
+  .small { width: 120px; height: 28px; }
+</style>
+</head>
+<body>
+<h1>Textarea fixture</h1>
+<label for="main">Main textarea</label><br>
+<textarea id="main">Their going to the the store tomorow, and i dont think its a good idea.  We was hoping you could of came with us.</textarea>
+<p><label for="subject">Single-line input</label><br>
+<input id="subject" type="text" value="Meeting notes for tommorow's standup"></p>
+<p><label for="tiny">Tiny textarea (should be skipped by size heuristics)</label><br>
+<textarea id="tiny" class="small">ok</textarea></p>
+<p><label for="pw">Password (must never be checked)</label><br>
+<input id="pw" type="password" value="hunter2 teh"></p>
+<p><label for="optout">Opted out via data-gramm="false"</label><br>
+<textarea id="optout" data-gramm="false">teh teh teh this is opted out</textarea></p>
+<p><label for="empty">Empty textarea</label><br>
+<textarea id="empty"></textarea></p>
+</body>
+</html>

@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Jammarly",
+  "description": "Grammar, clarity and tone suggestions powered by Claude. Hover to fix, or accept everything at once.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Jammarly",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["content/content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["storage", "sidePanel", "activeTab", "scripting"],
+  "host_permissions": ["https://api.anthropic.com/*"],
+  "optional_host_permissions": [],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+J" },
+      "description": "Open the Jammarly popup"
+    },
+    "toggle-on-site": {
+      "suggested_key": { "default": "Alt+Shift+G" },
+      "description": "Turn Jammarly on or off for this site"
+    },
+    "accept-all": {
+      "suggested_key": { "default": "Alt+Shift+A" },
+      "description": "Accept all suggestions in the focused field"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
