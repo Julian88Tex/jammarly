@@ -609,6 +609,8 @@ export type RuntimeRequest =
   | { type: 'get-host-status'; host: string }
   | { type: 'set-host-enabled'; host: string; enabled: boolean }
   | { type: 'open-side-panel' }
+  /** Opens the options page (optionally at a hash such as 'welcome'); used by the floating button's setup state. */
+  | { type: 'open-options'; hash?: string }
   | { type: 'get-sync-state' }
   | { type: 'ping' };
 
