@@ -87,11 +87,14 @@ export interface PrivacySettings {
   storeSnippets: boolean;
   retentionDays: 30 | 90 | 365;
   learningEnabled: boolean;
+  /** ISO time of the first-run "I agree" click; null until then (no text leaves the device before consent). */
+  consentAt: string | null;
 }
 
 export interface SiteOverride {
   context?: WritingContext;
-  formality?: WritingGoals['formality'];
+  /** Per-site goals ("For <host> only" in the Goals dialog); missing fields fall back to settings.goals. */
+  goals?: Partial<WritingGoals>;
   categories?: Partial<Record<SuggestionCategory, boolean>>;
 }
 
@@ -104,10 +107,16 @@ export interface RuleStats {
   lastSeen: string;
 }
 
-export type RuleState = 'active' | 'demoted' | 'suppressed' | 'promoted' | 'manual_off' | 'probing';
+/**
+ * Visibility state resolved by the learner. Promotion is NOT a state: it is the orthogonal `eligibleForBulk` flag
+ * (a rule can be active and promoted at once). Manual overrides live only in `rules.muted`.
+ */
+export type RuleState = 'active' | 'demoted' | 'suppressed' | 'probing';
 
 export interface LearnedRuleState {
   state: RuleState;
+  /** Correctness rules only, global scope: n >= 10 and Wilson lower bound >= 0.80. Promoted rules qualify for Tier A at confidence >= 0.70. */
+  eligibleForBulk: boolean;
   scope: 'global' | 'ctx' | 'host';
   scopeKey: string;
   since: string;
@@ -252,7 +261,7 @@ export function defaultProfile(now = '1970-01-01T00:00:00.000Z'): ProfileDocumen
       fastModel: { value: 'claude-haiku-5-5', hlc: z },
       userSalt: { value: '', hlc: z },
       privateSites: { value: [], hlc: z },
-      privacy: { value: { storeSnippets: true, retentionDays: 90, learningEnabled: true }, hlc: z },
+      privacy: { value: { storeSnippets: true, retentionDays: 90, learningEnabled: true, consentAt: null }, hlc: z },
       ignoreOptOutHosts: { value: [], hlc: z },
       checkOptedOutFields: { value: false, hlc: z },
     },

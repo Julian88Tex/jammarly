@@ -110,6 +110,9 @@ export interface LearningSummary {
     wilsonLB: number;
     wilsonUB: number;
     state: RuleState;
+    eligibleForBulk: boolean;
+    /** In rules.muted (globally or for this scopeKey). */
+    manualOff: boolean;
     since?: string;
     nextReprobe?: string;
   }[];

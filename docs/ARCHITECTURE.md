@@ -43,7 +43,15 @@ npm workspaces. The extension bundles `@jammarly/shared` sources; the web app tr
 | **Service worker** | Settings store, engine orchestration (local rules + Claude), block cache, cancellation, Anthropic client, keepalive, sync client to the web app, learning fold, commands, side panel routing, injection into already-open tabs on install. |
 | **Side panel** | Review list grouped by category, score, tone, goals, Accept all with preview, per-card actions. Talks only to the service worker. |
 | **Popup** | On/off (global and per site), counts, open panel, open options. |
-| **Options page** | API key, models, goals, categories, dialect, debounce, disabled sites, dictionary, muted rules, pairing with the web app, privacy, advanced (Google Docs compatibility id). |
+| **Options page** | First-run welcome (consent), API key, models, goals, categories, dialect, debounce, disabled sites, dictionary, muted rules, pairing with the web app, privacy, advanced (Google Docs inline auto/off, daily budget). |
+
+**First run.** On `runtime.onInstalled` with `reason === 'install'` the worker opens `options/options.html#welcome`:
+(1) a one-paragraph disclosure (text in fields you check is sent to Anthropic with your own key; nothing is sent until
+you finish this page) with an explicit **I agree** button that sets `settings.privacy.consentAt`; (2) the API key with
+"Test key", or "Pair with the web app"; (3) default sites: "Check everywhere" / "Only sites I turn on" (seeds
+`sites.disabled`). Until consent is recorded the worker answers every `check` with `error.code: 'consent-required'`,
+local rules still run, `EffectiveConfig.consented` is false and the floating button shows the `setup` state whose click
+opens the options page. This is also the Chrome Web Store user-data disclosure requirement [R05 M7].
 
 Transport: content scripts and the side panel open a long-lived `chrome.runtime.Port` to the service worker. Every
 message is a discriminated union in `@jammarly/shared/types` (`PortMessage`). While a Claude request is in flight the
@@ -72,7 +80,9 @@ tears down its overlay, observers and timers; orphans also self-destroy when `ch
   `occurrence` (1-based; `locateSpan` takes `occurrence - 1`) [R02 §8]. Blocks are sent as `<block id="b<index>">`.
   The worker resolves anchors with `locateSpan` (exact search, then a length-preserving normalized search, recorded as
   `anchor: 'exact' | 'normalized'`), validates every guard in [R02 §4.1] (sentence constraint, protected spans,
-  no-ops, range trimming) and drops anything it cannot anchor.
+  no-ops, range trimming) and drops anything it cannot anchor. `title` comes from `titleForRule(rule)` in
+  `@jammarly/shared/prompts` (a title for every rule id in the contract, "Consider this change" for `other`); the
+  model never emits a title.
 * The worker **caches block-relative** results (`CachedSuggestion` with `rel` offsets) per cache key; absolute
   `range`, `highlight`, `blockId` and the stable `id = hash(fieldId, blockHash, fingerprint, ordinalInBlock)` are derived at
   serve time, so a paragraph that moved still serves correct offsets and cards never flicker between passes.
@@ -118,14 +128,28 @@ tears down its overlay, observers and timers; orphans also self-destroy when `ch
   blocks (contract, voice profile), `AbortController` per field, `maxRetries: 1`, `timeout: 120_000`. The Opus pass
   sends `betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default'`. `stop_reason === 'refusal'` and
   `'max_tokens'` are handled explicitly (parse is wrapped; never show partial output) [R02 reviewer A6, A7].
-* Tone analysis is part of the same response (`document.tone`) and rendered when the field has ≥ 150 characters.
-* Cost is tracked per request from `usage` and shown in the side panel and options page.
+* **Tone** is a separate Haiku call on the whole field (≥ 150 characters, 1.5 s idle, keyed by the hash of the first
+  2,500 characters, thinking disabled, effort low, `max_tokens` 300) with its own byte-stable system prompt and a
+  `{ tone, rationale }` schema; it arrives as a `tone` port message. `document.tone` from a suggestion response is
+  used only when that response covered every block [R02 §8.6].
+* **Request budget.** Each call carries ≤ 4 dirty blocks and ≤ ~1,200 words (≈ 2,200 tokens at 1.8 tokens/word;
+  longer fields are sharded into several calls) plus ≤ 1 sentence of read-only `context_before` / `context_after`.
+  `max_tokens`: fast pass 4,096 (thinking disabled), deep pass 16,000 (adaptive thinking is billed as output). On
+  `stop_reason === 'max_tokens'` the worker re-requests the same blocks split in half (once); blocks still truncated
+  get `error.code: 'truncated'` and the tooltip "Couldn't check one paragraph". At most 3 requests in flight per key
+  across tabs; stale requests are aborted. 429 honours `retry-after`; `enforced_spend_limit_reached` maps to
+  `spend-cap` (not retryable) and 401 to `auth`, each with its own button state and tooltip [R02 reviewer A5, A6; R05 M1].
+* **Daily budget.** `DeviceSettings.dailyBudgetUsd` (default 2.00; 0 = unlimited). When today's cost reaches it the
+  worker skips deep passes (behaves as `economy`); when even Haiku would exceed it, checks answer `error.code: 'budget'`
+  and the button shows a budget chip ("Daily budget reached, Haiku only until midnight"). Today's and the month's cost
+  are shown next to the setting, in the popup and in the side panel.
+* Cost is tracked per request from `usage` (`estimateCostUsd`) and shown in the side panel and options page.
 * **Mock provider** (`provider: 'mock'`) returns deterministic suggestions for tests and demos.
 
 ### 3.4 Adapters and edit application
 
 Detection on `focusin` (capture) via `composedPath()[0]`, descending into open shadow roots. Eligible: `textarea`,
-text-like `input`, and contenteditable roots at least 38 px tall and not read-only; excluded: password/payment/OTP
+text-like `input`, and contenteditable roots at least 24 px tall and not read-only; excluded: password/payment/OTP
 inputs, code editors (CodeMirror, Monaco, Ace), and Google Docs' hidden input iframe [R03 §8 row 13, R04 §8].
 Site opt-out (union of every convention, [R09 §1.6]): the field or an ancestor has `data-gramm`, `data-gramm_editor`
 or `data-jammarly` with any value other than `"true"`, or `data-enable-grammarly="false"`, or `data-lt-active="false"`.
@@ -133,9 +157,11 @@ Opt-in overrides: `data-enable-grammarly="true"` or `data-jammarly="true"`. `spe
 (Squire, CodeMirror and others set it for unrelated reasons). A setting "Check fields that sites disabled" exists.
 Gmail is detected by `[g_editable="true"]`, not by the localized aria-label. Slack's composer carries
 `data-gramm="false"`, so the Slack site profile sets `ignoreSiteOptOut` (and every host gets a "Check here anyway"
-item in the floating-button menu, remembered in `settings.ignoreOptOutHosts`). Size gates per kind: textarea and
-contenteditable need `clientHeight ≥ 38 && clientWidth ≥ 120`; inputs need `clientHeight ≥ 24 && clientWidth ≥ 120`
-and no tiny `maxlength`; gates are re-evaluated on `ResizeObserver` so auto-growing fields become eligible.
+item in the floating-button menu, remembered in `settings.ignoreOptOutHosts`). Size gate for every kind:
+`clientWidth ≥ 120 && clientHeight ≥ 24`, re-evaluated on `ResizeObserver` so auto-growing fields become eligible
+(AI chat prompt boxes start at 24–36 px [R05 C3]); inputs are only `type=text|search|url`, need no small `maxlength`,
+and get Claude passes only once they hold ≥ 3 words. When the field is under 40 px tall the floating button is
+anchored just outside the field's bottom-right corner instead of inside it.
 
 | Adapter | Read | Draw | Apply (ladder, verified after each rung) |
 |---|---|---|---|
@@ -181,13 +207,26 @@ re-checks intersection at apply time.
 * All DOM is built with `createElement` and `textContent`; no `innerHTML` (Trusted Types on Google properties).
 * Underlines: one `div` per line fragment, 2 px, category color, re-laid-out on input/scroll/resize/mutation and
   chunked across `requestAnimationFrame`. Hit-testing on throttled `pointermove` against fragment rects.
-* Hover card: `popover="manual"` element in the top layer; anatomy per [R01 §10.4]; opens after 100 ms hover intent,
-  closes after a 250 ms grace, on `Esc`, click outside, or when the span is edited; shortcuts `a`, `d`, `1–9`, `Esc`
-  only while the card has focus.
-* Floating button: bottom-right of the field, states idle / checking / count / clean / collapsed / off / error, plus a
-  tone chip. Click opens the accept-all menu (counts per group, Accept all grammar / style / everything, open panel,
-  turn off here).
-* Colors: correctness `#E0372C`, clarity `#2A7DE1`, engagement `#1D9F7A`, delivery `#8B5CF6`; brand `#0E9A74`.
+* Hover card: `popover="manual"` element in the top layer; anatomy per [R01 §10.4]: category dot + label, title,
+  struck-through original followed by the bold replacement (clicking the replacement accepts), options 1–9 for
+  rewrites, explanation (`Learn more` expands past 140 chars), actions (Accept, Dismiss, Add to dictionary for
+  spelling, More: report incorrect / turn off suggestions like this on this site or everywhere / dismiss reasons), and
+  the footer "Jammarly helps you write clearly and mistake-free." until the first accept or dismiss. Tier A shows an
+  "Auto" chip, Tier C "Rewrite", stale rewrites "Sentence changed". Opens after 100 ms hover intent, closes after a
+  250 ms grace, on `Esc`, click outside, or when the span is edited; shortcuts `a`, `d`, `1–9`, `Esc` only while the
+  card has focus. After a single accept the card's place shows "Applied, Undo" for 8 s.
+* Floating button: bottom-right of the field (outside it when the field is under 40 px tall), states `setup` (gray
+  with a dot, "Finish setting up Jammarly") / idle / checking / count / clean / collapsed / off / unsupported /
+  error (sub-kinds `auth`, `rate-limit`, `spend-cap`, `budget`, `network`, each with a tooltip), plus a tone chip
+  (`TONE_EMOJI`). Hover reveals a power button ("Turn off in this field until next visit" / "forever"); click opens
+  the menu: Accept all grammar (n) / Accept all style and tone (n) / Accept everything (n, "k rewrites need your
+  choice"), Undo last, Open review panel, Check now (deep pass), Check here anyway (opt-out hosts), Turn off on
+  `<host>`, Turn off this field.
+* Colors as tokens on `:host` with dark variants under `prefers-color-scheme: dark`: correctness `#E0372C` / `#FF6B61`,
+  clarity `#2A7DE1` / `#5B9CF6`, engagement `#1D9F7A` / `#34D3AC`, delivery `#8B5CF6` / `#B07CF0`, interactive
+  `#2551DA` / `#7A9BFF`, brand `#0E9A74`. Underline states: default 2 px; active 3 px plus an 18 % tint behind the
+  text while the card is open; pending fades. Colorblind mode = Wong palette plus a per-category pattern (solid /
+  dashed / dotted / double); `forced-colors: active` falls back to borders.
 * Commands: `toggle-on-site`, `accept-all` (= Accept all grammar, the safe tier, routed to the active field) and
   `open-panel`; `_execute_action` opens the popup. Alt+Shift chords avoid Chrome's built-ins (Ctrl+Shift+J is
   DevTools) but can collide with Windows input-language switching on two-language profiles; they are user-editable at
@@ -226,12 +265,18 @@ re-checks intersection at apply time.
 
 ### 3.7 Learning
 
-* The content script emits `FeedbackEvent`s (`shown`, `accept`, `dismiss` with reason, `ignore`, `edit_after_accept`,
-  `add_to_dictionary`, `report_incorrect`) with ≤ 200-char redacted snippets when snippet storage is on [R08 §8.1].
+* The content script emits the ten `FeedbackKind`s of `learning.ts` (`shown` once per suggestion id per field
+  session; `ignore` on blur/send/close after ≥ 2 s dwell; `accepted_by_typing` / `self_corrected` from the span's
+  `inputType`-tagged edits; `edit_after_accept` carries `final`) with ≤ 200-char redacted snippets when snippet
+  storage is on. Voice samples take only sentences whose characters were typed (`insertText` /
+  `insertCompositionText`), never pasted, dropped or Jammarly-applied [R08 §8.1].
 * The worker folds events into per-(scope, rule) counters immediately (scopes host → context → global) and runs the
-  deterministic learner: Wilson-bound suppression (n ≥ 8, upper bound < 0.35), demotion, promotion of correctness
-  rules to Tier A, dictionary growth from repeated spelling dismissals, dialect inference. Core correctness errors
-  with confidence ≥ 0.9 are never learned away [R08 §8.2].
+  deterministic learner. Constants: `N_MIN_SCOPE = 8` (the most specific scope with n ≥ 8 decides), `UB_SUPPRESS =
+  0.35`, `N_MIN_DEMOTE = 6`, `UB_DEMOTE = 0.50`, `CONFIDENCE_FLOOR = 0.90`; no time decay in v1 (counters are folded
+  daily). Promotion is the orthogonal `eligibleForBulk` flag (correctness only, global scope, n ≥ 10 ∧ Wilson LB ≥
+  0.80): a promoted rule's correctness suggestions qualify for Tier A at confidence ≥ 0.70 instead of 0.85 (severity
+  `error`, `autoApplySafe` and exact anchor still required). Manual overrides live only in `rules.muted`. Core
+  correctness errors with confidence ≥ 0.9 are never learned away [R08 §8.2, reviewer 32].
 * Learned state (`mutedRules`, `demotedRules`, `dictionary`) is part of the profile document and syncs.
 * The **voice profile** is synthesized by Claude from the user's final text samples and decision history, rendered
   as a byte-stable `<user_voice_profile>` system block (400–800 tokens) placed before any volatile content
@@ -296,10 +341,12 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
   upload route strips `original`/`replacement`/`final`/`sentence` and samples regardless of what a device sent; the
   daily fold purges events past `retentionDays`; "Delete all learning data" enumerates events, samples, snapshots,
   runs, learned dictionary entries and voice profiles; export returns the same set as JSON.
-* **Pages:** Overview, Tuning (goals, categories, custom instructions, dictionary, muted rules, site overrides,
-  models and API key), Voice (profile per context: view, edit, lock traits, regenerate, history), Learning
-  (acceptance by category, rule table with overrides, "what Jammarly learned"), Devices, Privacy, and **Check text**
-  (paste → check → Accept all → copy, the universal fallback for canvas apps; the side panel offers the same).
+* **Pages:** Overview (sync status, devices with revoke and pairing, usage, Blob budget warning at 80 %), Tuning
+  (goals with per-site overrides, categories, custom instructions, dictionary, muted rules, models and engine mode,
+  server key for the learning job), Voice (profile per context: view, edit, lock traits, remove items, regenerate,
+  history, strength), Learning (acceptance by category, rule table with state / `eligibleForBulk` / overrides, "what
+  Jammarly learned"), Privacy and data (consent, snippet storage, retention, private sites, export, delete). The
+  paste → check → Accept all → copy flow lives in the extension's side panel, not in the web app.
 * **Contexts:** events and scopes use `email | chat | doc | social | code | other`; voice profiles use
   `messages` (email, chat, social) and `documents` (doc, other); `code` gets no voice profile [R09 §1.13].
 * **Learning job:** two cron entries (`?ctx=messages` at 03:00 UTC, `?ctx=documents` at 04:00 UTC); the first also
@@ -320,7 +367,22 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
   `/api/devices/pair/*`; create a production deployment from the PR branch until it merges; then build the extension
   with `JAMMARLY_APP_ORIGIN` set to the alias and record the extension id in `EXTENSION_IDS`.
 
-## 5. Testing
+## 5. v1 scope and staging
+
+**v1 ships:** textarea/input and generic contenteditable through the verified ladder, with named profiles for Gmail,
+Superhuman (Squire), Slashy, Slack, ProseMirror hosts (ChatGPT, Claude.ai, Atlassian) and Notion; best-effort
+profiles for Draft.js (X), Slate (Discord), Lexical (Facebook, Threads), LinkedIn, Gutenberg, Reddit and GitHub that
+degrade to the generic ladder when a rung fails verification; local rules; hybrid engine with budget and the mock
+provider; hover card, underlines, floating button, side panel (grouped list, Accept-all preview, undo, revert, scratch
+check); dismissal memory; first-run, options and popup; pairing, profile sync and event upload; nightly fold with
+Wilson suppression / demotion, manual mute and dictionary; web-app voice synthesis with lint and injection at strength
+0–2; Google Docs layer 1 (side panel) plus the layer 2 bridge behind its runtime activation check.
+
+**Staged to v1.1:** on-device "Learn my voice now", dialect inference (needs `'auto'` in `Dialect`), style-decision
+mining, dictionary auto-growth beyond candidates, reprobing and the 30 % suppression cap as user-visible features,
+strength 3, a `document.consistency` UI, and Docs "send as Suggestions" through the REST API.
+
+## 6. Testing
 
 * Unit: vitest in each workspace (shared: node; extension: jsdom; web: node with an in-memory blob store).
 * e2e: Playwright loads `apps/extension/dist` into headless Chromium with the mock engine and fixture pages

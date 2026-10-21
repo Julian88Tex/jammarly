@@ -230,6 +230,10 @@ export interface CheckResult {
 
 export type CheckErrorCode =
   | 'no-api-key'
+  /** First-run consent not recorded yet (settings.privacy.consentAt is null); local rules still run. */
+  | 'consent-required'
+  /** The device's daily budget is exhausted and even the fast model would exceed it. */
+  | 'budget'
   | 'auth'
   | 'rate-limit'
   | 'spend-cap'
@@ -338,6 +342,8 @@ export interface ApplyTransaction {
   at: string;
   /** Edits as applied, with post-apply ranges (replacement now sits at `range`). */
   edits: Edit[];
+  /** What was applied, for the "Recently applied" list (one row per suggestion, same order as appliedIds). */
+  items: { id: string; title: string; category: SuggestionCategory; original: string; replacement: string }[];
   appliedIds: string[];
   /** Ids reverted individually or by a native undo since. */
   revertedIds: string[];
@@ -382,6 +388,11 @@ export interface DeviceSettings {
   colorblindMode: boolean;
   /** Google Docs inline mode: 'auto' enables the bridge only when Docs exposes the annotated-text API for our id. */
   gdocsInline: 'auto' | 'off';
+  /**
+   * Daily spend cap in USD for this device (0 = no limit). When today's cost reaches it the worker skips deep passes
+   * (behaves as 'economy'); when even the fast model would exceed it, checks answer error.code 'budget'.
+   */
+  dailyBudgetUsd: number;
   /** Pairing with the web app; null when unpaired. */
   pairing: DevicePairing | null;
 }
@@ -420,6 +431,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   showUnderlines: true,
   colorblindMode: false,
   gdocsInline: 'auto',
+  dailyBudgetUsd: 2,
   pairing: null,
 };
 
@@ -457,6 +469,10 @@ export interface EffectiveConfig {
   storeSnippets: boolean;
   /** The engine is usable (key present or mock provider). */
   engineReady: boolean;
+  /** First-run consent recorded (settings.privacy.consentAt). Until then the button shows 'setup' and no text leaves the device. */
+  consented: boolean;
+  /** Today's spend reached dailyBudgetUsd: deep passes are skipped; the button shows a budget chip. */
+  budgetExhausted: boolean;
   /** Google Docs: our own id, used by the isolated-world adapter to call the annotated-text API. */
   gdocsAnnounceId: string;
   gdocsInline: 'auto' | 'off';
@@ -468,7 +484,8 @@ export interface EffectiveConfig {
 // Field state (what the side panel and popup render)
 // ---------------------------------------------------------------------------
 
-export type FieldStatus = 'idle' | 'checking' | 'clean' | 'suggestions' | 'error' | 'off' | 'unsupported';
+/** 'setup' = first-run consent or API key missing (click opens the options page). Error sub-kinds travel in CheckError.code. */
+export type FieldStatus = 'setup' | 'idle' | 'checking' | 'clean' | 'suggestions' | 'error' | 'off' | 'unsupported';
 
 export interface FieldState {
   fieldId: string;
@@ -491,8 +508,10 @@ export interface FieldState {
   /** The focused field in its tab. */
   active: boolean;
   usage?: TokenUsage;
-  /** Undo transactions available, newest first. */
+  /** Undo transactions available (= transactions.length). */
   undoAvailable: number;
+  /** Recent apply transactions, newest first, at most 20, for the panel's "Recently applied" list and per-item revert. */
+  transactions: ApplyTransaction[];
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +543,8 @@ export type WorkerToContent =
   | { type: 'config'; config: EffectiveConfig }
   | { type: 'check-progress'; fieldId: string; version: number; pass: CheckPass; stage: 'queued' | 'sent' | 'streaming' | 'deep-scheduled' }
   | { type: 'check-result'; result: CheckResult }
+  /** Separate whole-field tone call (>= 150 chars, 1.5 s idle, text-hash cached). */
+  | { type: 'tone'; fieldId: string; version: number; tone: ToneAnalysis }
   | { type: 'panel-action'; action: PanelAction }
   | { type: 'ping' };
 
@@ -533,7 +554,8 @@ export type PanelToWorker =
   | { type: 'panel-action'; action: PanelAction }
   | { type: 'check'; request: CheckRequest }
   | { type: 'cancel'; fieldId: string }
-  | { type: 'set-goals'; goals: WritingGoals }
+  /** scope 'host' writes sites.overrides[host].goals; 'global' writes settings.goals. Re-checks open fields. */
+  | { type: 'set-goals'; goals: WritingGoals; scope: 'host' | 'global'; host?: string }
   | { type: 'set-categories'; categories: Record<SuggestionCategory, boolean> }
   | { type: 'dismiss'; fieldId: string; suggestionId: string; fingerprint: string; rule: string; docKey: string; reason?: DismissReason }
   | { type: 'add-to-dictionary'; word: string }
@@ -546,6 +568,7 @@ export type WorkerToPanel =
   | { type: 'field-removed'; fieldId: string }
   | { type: 'check-progress'; fieldId: string; version: number; pass: CheckPass; stage: 'queued' | 'sent' | 'streaming' | 'deep-scheduled' }
   | { type: 'check-result'; result: CheckResult }
+  | { type: 'tone'; fieldId: string; version: number; tone: ToneAnalysis }
   | { type: 'config'; config: EffectiveConfig; settings: PublicDeviceSettings; sync: SyncState | null };
 
 /** Device settings minus secrets, safe for pages other than the worker. */
@@ -561,7 +584,9 @@ export type PanelAction =
   | { type: 'focus'; fieldId: string; suggestionId: string }
   | { type: 'recheck'; fieldId: string }
   | { type: 'undo'; fieldId: string; transactionId?: string }
-  | { type: 'revert'; fieldId: string; suggestionId: string };
+  | { type: 'revert'; fieldId: string; suggestionId: string }
+  /** Grammarly's per-category trash: dismiss every pending suggestion of one category in the field. */
+  | { type: 'dismiss-all'; fieldId: string; category: SuggestionCategory };
 
 // ---------------------------------------------------------------------------
 // Request/response messaging (options, popup, content click handlers -> worker) via chrome.runtime.sendMessage.
@@ -572,6 +597,7 @@ export type RuntimeRequest =
   | { type: 'get-settings' }
   | { type: 'set-settings'; patch: Partial<DeviceSettings> }
   | { type: 'get-profile' }
+  /** Pages send ops with hlc '' and the worker stamps them with its clock before applying and queueing. */
   | { type: 'profile-ops'; ops: ProfileOp[] }
   | { type: 'test-api-key'; apiKey: string }
   | { type: 'pair'; pairingId: string; code: string }
@@ -603,6 +629,34 @@ export interface UsageTotals {
   today: TokenUsage & { requests: number };
   month: TokenUsage & { requests: number };
 }
+
+/** Emoji for the tone chip (Grammarly's seed map plus neutral fallbacks); unknown labels use TONE_EMOJI_FALLBACK. */
+export const TONE_EMOJI: Record<string, string> = {
+  formal: '👔',
+  informal: '😎',
+  confident: '🤝',
+  uncertain: '🤔',
+  appreciative: '🙌',
+  joyful: '🙂',
+  encouraging: '💪',
+  friendly: '😊',
+  optimistic: '🌤️',
+  neutral: '😐',
+  direct: '🎯',
+  assertive: '💼',
+  urgent: '⏰',
+  apologetic: '🙏',
+  worried: '😟',
+  sad: '😔',
+  frustrated: '😤',
+  disapproving: '😒',
+  curious: '🧐',
+  analytical: '📊',
+  excited: '🤩',
+  respectful: '🤲',
+  sarcastic: '🙃',
+};
+export const TONE_EMOJI_FALLBACK = '💬';
 
 // Re-exported so this file remains the single import for message contracts.
 import type { ProfileDocument, ProfileOp, VoiceContext, VoiceProfile } from './profile';
