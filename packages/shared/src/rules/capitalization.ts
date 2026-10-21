@@ -14,6 +14,12 @@ const LONE_I_RE = /(?<![\p{L}\p{N}'’.\-_])i(?:(['’])(m|ve|ll|d))?(?![\p{L}\p
 const NO_UPPER_RE = /^[^\p{Lu}]*$/u;
 const MATH_BEFORE = '=+-*/<>^(';
 const MATH_AFTER = '=+-*/<>^)';
+/**
+ * A sentence-start word that opens a code statement: the keyword must be followed by a code-shaped
+ * continuation ("for i in", "if (", "def f(", "const x ="), so prose such as "return to sender." or
+ * "class dismissed." is still checked.
+ */
+const CODE_START_RE = /^(?:for\s+\w+\s+in\s|for\s*\(|if\s*\(|while\s*\(|switch\s*\(|def\s+\w+\s*\(|class\s+\w+\s*[(:{]|function\s*\*?\s*\w*\s*\(|(?:const|let|var)\s+[\w{[$]+\s*=|import\s+[\w.{*]+\s*(?:from\s|;|$)|from\s+[\w.]+\s+import\s|print\s*\(|console\.\w+\(|try\s*[:{]|catch\s*\(|elif\s[^\n]*:\s*$|else\s*[:{])/;
 
 /**
  * Lower-case styled names and acronyms that are correct in lowercase at a sentence start, or whose
@@ -55,6 +61,7 @@ export function capitalizationRule(ctx: RuleContext): void {
     const lower = word.toLowerCase();
     if (lower === 'i') return; // lone-i check below
     if (word.length === 1) return; // "x marks the spot", variables
+    if (CODE_START_RE.test(work.slice(wordStart, wordStart + 80))) return; // "for i in range(10):", "if (x) {"
     if (CAMEL_RE.test(tail) || HAS_DIGIT_RE.test(tail)) return; // iPhone, macOS, utf8
     if (LOWER_OK.has(lower) || ctx.protectedTerms.has(lower) || ctx.protectedTerms.has(tail.toLowerCase())) return;
     const after = work.charAt(wordStart + tail.length);
@@ -82,9 +89,13 @@ export function capitalizationRule(ctx: RuleContext): void {
   // After a terminator run + optional closers + whitespace.
   for (const m of work.matchAll(SENTENCE_BREAK_RE)) {
     const run = m[1] ?? '';
+    const closers = m[2] ?? '';
     const runStart = m.index;
     const wordStart = runStart + m[0].length;
     if (run.includes('.') && run.length >= 2) continue; // ellipsis "..." or "?.."
+    // "Stop!" she yelled. / He left (finally!) and went home. A quoted or bracketed exclamation or
+    // question does not end the enclosing sentence; a period inside the closer does ("no." then left).
+    if (closers.length > 0 && !run.includes('.')) continue;
     if (run === '.') {
       if (runStart === 0) continue;
       const before = work.charAt(runStart - 1);

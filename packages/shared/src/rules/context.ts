@@ -54,18 +54,24 @@ export const ABBREVIATIONS = new Set([
   'approx', 'dept', 'est', 'gen', 'gov', 'govt', 'sen', 'rep', 'col', 'capt', 'lt', 'sgt', 'ave', 'blvd', 'rd',
   'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
   'al', 'cf', 'ca', 'misc', 'resp', 'tel', 'ext', 'min', 'max', 'avg', 'univ', 'assn', 'bros', 'mfg', 'intl',
-  'eg', 'ie', 'am', 'pm',
+  'eg', 'ie', 'am', 'pm', 'viz', 'ibid', 'nb', 'qv', 'cit',
+  'mon', 'tue', 'tues', 'wed', 'thu', 'thur', 'thurs', 'fri', 'sat', 'sun',
+  'assoc', 'bldg', 'hwy', 'sq', 'ste', 'apt', 'wk', 'wks', 'yr', 'yrs', 'hr', 'hrs',
+  'oz', 'lb', 'lbs', 'kg', 'km', 'cm', 'mm', 'mi', 'tbsp', 'tsp', 'qt', 'gal', 'mph',
   // AP-style US state and Canadian province abbreviations that are not ordinary English words.
   'ala', 'ariz', 'ark', 'calif', 'colo', 'conn', 'del', 'fla', 'ga', 'kan', 'ky', 'mass', 'md', 'mich', 'minn', 'mo',
   'mont', 'neb', 'nev', 'okla', 'pa', 'penn', 'tenn', 'tex', 'va', 'vt', 'wis', 'wyo', 'ont', 'que', 'sask', 'nfld',
 ]);
+/** Roman numerals used as list markers ("i. first", "IV. results"); only honoured at a line start. */
+const ROMAN_MARKER_RE = /^(?:i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx)$/i;
 /** Abbreviations that only count when a number follows ("No. 5", "Fig. 2", "p. 12"). */
 export const NUMERIC_ABBREVIATIONS = new Set(['no', 'nos', 'vol', 'vols', 'pp', 'p', 'ch', 'fig', 'figs', 'sec', 'art', 'para', 'ver', 'ed', 'eds']);
 
 /**
  * True when the text ending at `periodIdx` (exclusive) is an abbreviation or initial, so a period
  * there does not end a sentence: single capital letters ("J. K."), dotted abbreviations whose
- * segments are 1–2 letters ("e.g.", "U.S."), the ABBREVIATIONS list, and bare numbers ("3.").
+ * segments are 1–2 letters ("e.g.", "U.S."), roman-numeral list markers at a line start, the
+ * ABBREVIATIONS list, and bare numbers ("3.").
  */
 export function isAbbreviationBefore(s: string, periodIdx: number, nextCh = ''): boolean {
   let k = periodIdx;
@@ -77,7 +83,9 @@ export function isAbbreviationBefore(s: string, periodIdx: number, nextCh = ''):
   const word = s.slice(k, periodIdx);
   if (word.length === 0) return false;
   if (/^\p{N}+$/u.test(word)) return true;
-  if (word.length === 1 && isUpper(word)) return true;
+  // A single letter is an initial ("J. K.", "e. e. cummings") or a list marker ("a. first").
+  if (word.length === 1 && isLetter(word)) return true;
+  if (ROMAN_MARKER_RE.test(word) && /^[ \t(]*$/.test(s.slice(s.lastIndexOf('\n', k - 1) + 1, k))) return true;
   if (word.includes('.')) {
     const segments = word.split('.');
     if (segments.every((seg) => seg.length >= 1 && seg.length <= 2)) return true;

@@ -16,6 +16,7 @@ export function terminalPunctuationRule(ctx: RuleContext): void {
     if (ch === '.' && run.length >= 3) continue; // ellipsis
     const before = start > 0 ? work.charAt(start - 1) : '';
     const after = work.charAt(end);
+    if (ch === '.' && (before === '?' || before === '!')) continue; // "Hmm?.." and "Oh!.." ellipses
     if (isLetter(after) || isDigit(after)) continue; // "!!x", "1..5", "a,,b" look like code or ranges
     if (before === '' || isWs(before)) continue; // standalone "??", "!!", "../"
     if (ch === '.' && (after === '/' || before === '/')) continue; // relative paths

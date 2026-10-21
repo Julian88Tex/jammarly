@@ -1,0 +1,66 @@
+/* Jammarly page tokens. This block is copied verbatim to the top of sidepanel.css, popup.css and options.css
+   (tests/unit/pages-common.test.ts checks they stay in sync); theme.ts re-applies the category colors from the
+   overlay constants at runtime. Edit here first. */
+:root {
+  --jm-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --jm-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --jm-font-size: 14px;
+  --jm-radius: 8px;
+  --jm-radius-sm: 6px;
+  --jm-radius-pill: 999px;
+  --jm-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 20px rgba(16, 24, 40, 0.1);
+  --jm-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --jm-bg: #ffffff;
+  --jm-bg-elev: #f5f7f9;
+  --jm-bg-hover: #eef1f4;
+  --jm-surface: #ffffff;
+  --jm-border: #e2e6ea;
+  --jm-border-strong: #c9d0d7;
+  --jm-text: #1a1f26;
+  --jm-text-muted: #5b6673;
+  --jm-text-faint: #8a949e;
+  --jm-brand: #0E9A74;
+  --jm-brand-strong: #0b7f60;
+  --jm-brand-soft: rgba(14, 154, 116, 0.12);
+  --jm-on-brand: #ffffff;
+  --jm-interactive: #2551DA;
+  --jm-interactive-soft: rgba(37, 81, 218, 0.1);
+  --jm-correctness: #E0372C;
+  --jm-clarity: #2A7DE1;
+  --jm-engagement: #1D9F7A;
+  --jm-delivery: #8B5CF6;
+  --jm-danger: #d23f31;
+  --jm-danger-soft: rgba(210, 63, 49, 0.1);
+  --jm-warning: #b7791f;
+  --jm-warning-soft: rgba(183, 121, 31, 0.12);
+  --jm-success: #1d9f7a;
+  --jm-focus: #2551DA;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --jm-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+    --jm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --jm-bg: #15181c;
+    --jm-bg-elev: #1d2126;
+    --jm-bg-hover: #262b31;
+    --jm-surface: #1b1f24;
+    --jm-border: #2d333b;
+    --jm-border-strong: #3d4550;
+    --jm-text: #e7eaee;
+    --jm-text-muted: #a3adb8;
+    --jm-text-faint: #78838f;
+    --jm-brand-soft: rgba(14, 154, 116, 0.22);
+    --jm-interactive: #7A9BFF;
+    --jm-interactive-soft: rgba(122, 155, 255, 0.16);
+    --jm-correctness: #FF6B61;
+    --jm-clarity: #5B9CF6;
+    --jm-engagement: #34D3AC;
+    --jm-delivery: #B07CF0;
+    --jm-danger: #ff7b6f;
+    --jm-danger-soft: rgba(255, 123, 111, 0.16);
+    --jm-warning: #e0a93f;
+    --jm-warning-soft: rgba(224, 169, 63, 0.16);
+    --jm-focus: #7A9BFF;
+  }
+}

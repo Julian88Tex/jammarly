@@ -339,6 +339,11 @@ describe('capitalization', () => {
     ['Done.\nnext line', ['next→Next']],
     ['  leading space', ['leading→Leading']],
     ["Stop. don't do it.", ['don→Don']],
+    ['Was it good? yes. Was it cheap? no.', ['yes→Yes', 'no→No']],
+    // Prose that merely starts with a programming keyword is still a sentence.
+    ['return to sender. class dismissed. import duties apply. function over form.', ['return→Return', 'class→Class', 'import→Import', 'function→Function']],
+    // "mix" is not a roman numeral; "vi" is one but not at a line start.
+    ['Mix well. then stir. I love vi. then emacs.', ['then→Then', 'then→Then']],
   ])('%j', (text, expected) => {
     expect(fixes(text, 'capitalization')).toEqual(expected);
   });
@@ -365,6 +370,26 @@ describe('capitalization', () => {
     'Done. foo.bar() runs. config.value is set.',
     'Done. http://x.com works.',
     'Done. jammarly rocks.',
+    // Dialogue and asides: a quoted or bracketed "!" / "?" does not end the enclosing sentence.
+    '"Stop!" she yelled.',
+    '"Where are you going?" he asked.',
+    'He left (finally!) and went home.',
+    'She asked “why?” and left.',
+    // Code statements: keyword plus a code-shaped continuation.
+    'for i in range(10): print(i)',
+    'if (x > 1) { return y; }',
+    'const total = a + b',
+    'def main(): pass',
+    'import os',
+    // Abbreviations: weekdays, scholarly and unit shorthand.
+    'Open at 9 a.m. on Mon. and 2 p.m. on Tue. then close.',
+    'See cf. bananas; viz. produce; ibid. again; nb. this',
+    'Weighs 5 lbs. then more; drive 3 mi. then stop',
+    // Initials and list markers: single letters and roman numerals at a line start.
+    'e. e. cummings wrote poems',
+    'a. first\nb. second\nc. third',
+    'i. first\nii. second\niii. third\niv. fourth',
+    'I. intro\nII. body\n(iii. aside)',
   ])('leaves %j alone', (text) => {
     expect(only(text, 'capitalization', { protectedTerms: ['jammarly'] }).filter((h) => h.title === RULE_TITLES['capitalization.sentence_start'])).toEqual([]);
   });
@@ -577,6 +602,9 @@ describe('terminal_punctuation', () => {
     ['Hmm.... ok', []],
     ['Really?!', []],
     ['What!?', []],
+    ['Hmm?.. ok', []],
+    ['Oh!.. no', []],
+    ['Wow?!?!', []],
     ['a ?? b', []],
     ['x = !!y', []],
     ['range 1..5', []],
