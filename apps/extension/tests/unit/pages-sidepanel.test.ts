@@ -619,12 +619,11 @@ describe('adversarial', () => {
     expect(app!.store.get().scratch.checking).toBe(false);
     const ids = Array.from(root.querySelectorAll<HTMLElement>('.jm-card')).map((c) => c.dataset.suggestionId).sort();
     expect(ids).toEqual(['ok1', 'tierX']);
-    // An unknown tier is never bulk-applied: it counts as a rewrite that needs a choice.
-    expect(root.querySelector<HTMLButtonElement>('[data-group="grammar"] .jm-count-badge')?.textContent).toBe('1');
-    expect(root.querySelector('.jm-accept-note')?.textContent).toContain('1 rewrite');
+    // Bulk accept goes by kind and category, not tier: a well-formed replacement with an unknown tier still applies.
+    expect(root.querySelector<HTMLButtonElement>('[data-group="grammar"] .jm-count-badge')?.textContent).toBe('2');
     click('[data-group="all"]');
-    expect(area.value).toBe('The cat sat.');
-    expect(app!.store.get().scratch.suggestions.map((s) => s.id)).toEqual(['tierX']);
+    expect(area.value).toBe('The dog sat.');
+    expect(app!.store.get().scratch.suggestions).toEqual([]);
   });
 
   it('a field-state for an unknown field is shown, and one missing optional parts still renders', async () => {

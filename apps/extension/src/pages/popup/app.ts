@@ -14,7 +14,7 @@ import { connectPanelPort, type PanelPort } from '../common/port';
 import { describeFailure, pick, request } from '../common/rpc';
 import { createStore, type Store } from '../common/store';
 import { CATEGORY_LABELS, watchTheme } from '../common/theme';
-import { acceptAllCounts } from '../../content/controller/store';
+import { acceptAllCounts, selectAcceptAll } from '../../content/controller/store';
 import { button, categoryDot, createToastHost, switchControl, type ToastHandle } from '../common/ui';
 
 export interface PopupState {
@@ -366,7 +366,10 @@ function renderFieldActions(state: PopupState, actions: PopupActions): HTMLEleme
   if (!field || field.status === 'unsupported') return null;
   const off = field.status === 'off';
   const counts = acceptAllCounts(field.suggestions);
-  const everything = counts.grammar + counts.style;
+  const everything = selectAcceptAll(field.suggestions, { group: 'all' }).selected.length;
+  // Whatever bulk accept leaves (rewrites to pick, notes without a fix, overlapping alternatives) is listed for review,
+  // so the rows always add up to the field's total.
+  const review = field.suggestions.length - everything;
   const disabled = off || state.loading;
   const row = (label: string, count: number | null, key: string, onClick: () => void, opts: { icon?: Parameters<typeof icon>[0]; disabled?: boolean; primary?: boolean } = {}): HTMLElement =>
     h(
@@ -382,7 +385,7 @@ function renderFieldActions(state: PopupState, actions: PopupActions): HTMLEleme
     row('Accept all grammar', counts.grammar, 'accept-grammar', () => actions.acceptAll('grammar'), { icon: 'check', disabled: disabled || counts.grammar === 0 }),
     row('Accept all style and tone', counts.style, 'accept-style', () => actions.acceptAll('style'), { icon: 'sparkle', disabled: disabled || counts.style === 0 }),
     row('Accept everything', everything, 'accept-all', () => actions.acceptAll('all'), { icon: 'check', disabled: disabled || everything === 0, primary: everything > 0 }),
-    counts.rewrites > 0 ? h('div', { class: 'jm-action-note' }, `${plural(counts.rewrites, 'rewrite')} need your choice in the review panel.`) : null,
+    review > 0 ? h('div', { class: 'jm-action-note' }, `${review} ${review === 1 ? 'suggestion needs' : 'suggestions need'} your choice in the review panel.`) : null,
     h('div', { class: 'jm-action-divider' }),
     field.undoAvailable > 0 ? row('Undo last change', null, 'undo', () => actions.undo(), { icon: 'undo' }) : null,
     row('Check now', null, 'recheck', () => actions.recheck(), { icon: 'refresh', disabled }),

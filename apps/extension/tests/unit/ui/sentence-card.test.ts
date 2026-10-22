@@ -51,23 +51,17 @@ describe('sentence grouping', () => {
     expect(sentenceGroupFor(withS2, TEXT, 's1')!.members.map((m) => m.id)).toEqual(['s1', 's2']);
   });
 
-  it('excludes stale, rewrite, flag, tier C, meaning-changing and inexact tier A suggestions', () => {
+  it('excludes stale suggestions, rewrites and flags; groups every other span edit whatever its tier', () => {
     const base = [item(S1(), R1)];
-    const variants: Partial<Suggestion>[] = [
-      { stale: true },
-      { kind: 'rewrite', tier: 'C' },
-      { kind: 'flag', tier: 'C', replacement: 'tomorow' },
-      { tier: 'C' },
-      { meaningPreserving: false },
-      { tier: 'A', anchor: 'normalized' },
-    ];
-    for (const v of variants) {
+    const excluded: Partial<Suggestion>[] = [{ stale: true }, { kind: 'rewrite', tier: 'C' }, { kind: 'flag', tier: 'C', replacement: 'tomorow' }];
+    for (const v of excluded) {
       const other = at(TEXT, 'o', 'tomorow', { replacement: 'tomorrow', ...v });
       expect(isGroupable(other), JSON.stringify(v)).toBe(false);
       expect(sentenceGroupFor([...base, item(other, R2)], TEXT, 's1'), JSON.stringify(v)).toBeNull();
       expect(sentenceGroupFor([...base, item(other, R2)], TEXT, 'o'), JSON.stringify(v)).toBeNull();
     }
-    expect(isGroupable(at(TEXT, 'b', 'tomorow', { tier: 'B', anchor: 'normalized' }))).toBe(true); // tier B needs no exact anchor
+    const included: Partial<Suggestion>[] = [{ tier: 'C' }, { meaningPreserving: false }, { tier: 'A', anchor: 'normalized' }, { tier: 'B', anchor: 'normalized' }];
+    for (const v of included) expect(isGroupable(at(TEXT, 'o', 'tomorow', { replacement: 'tomorrow', ...v })), JSON.stringify(v)).toBe(true);
   });
 
   it('falls back to the single card when the hovered suggestion is alone in its sentence', () => {

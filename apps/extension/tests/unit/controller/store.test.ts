@@ -6,6 +6,7 @@ import {
   editKey,
   mergeSuggestions,
   rebaseAcrossChange,
+  bulkGroupOf,
   selectAcceptAll,
   stabilizeRuleIds,
 } from '../../../src/content/controller/store';
@@ -113,7 +114,7 @@ describe('stabilizeRuleIds / selectAcceptAll / counts', () => {
     expect(stabilizeRuleIds(prev, next).map((s) => s.id)).toEqual(['old', 'other']);
   });
 
-  it('selects tier A for grammar, tier B for style, both for all; excludes stale, normalized anchors (A), non-span kinds and overlaps', () => {
+  it('groups every span edit with a replacement: correctness as grammar, the rest as style; rewrites, flags and stale ones need review', () => {
     const a = makeSuggestion({ id: 'a', tier: 'A', range: { start: 0, end: 3 }, original: 'teh' });
     const aNorm = makeSuggestion({ id: 'an', tier: 'A', anchor: 'normalized', range: { start: 10, end: 13 }, original: 'teh' });
     const b = makeSuggestion({ id: 'b', tier: 'B', category: 'clarity', range: { start: 20, end: 25 }, original: 'quite', replacement: '' , kind: 'delete' });
@@ -121,26 +122,28 @@ describe('stabilizeRuleIds / selectAcceptAll / counts', () => {
     const bOverlap = makeSuggestion({ id: 'bo', tier: 'B', category: 'engagement', range: { start: 1, end: 4 }, original: 'ehx' });
     const rw = makeSuggestion({ id: 'rw', kind: 'rewrite', tier: 'C', range: { start: 0, end: 40 }, original: 'x'.repeat(40) });
     const flag = makeSuggestion({ id: 'fl', kind: 'flag', tier: 'C', range: { start: 50, end: 52 }, original: 'ok', replacement: 'ok' });
-    const notMp = makeSuggestion({ id: 'nm', tier: 'B', category: 'clarity', meaningPreserving: false, range: { start: 60, end: 62 }, original: 'ok' });
+    const notMp = makeSuggestion({ id: 'nm', tier: 'C', category: 'delivery', meaningPreserving: false, range: { start: 60, end: 62 }, original: 'ok' });
     const all = [a, aNorm, b, bStale, bOverlap, rw, flag, notMp];
 
+    expect(all.map((s) => bulkGroupOf(s))).toEqual(['grammar', 'grammar', 'style', null, 'style', null, null, 'style']);
+
     const grammar = selectAcceptAll(all, { group: 'grammar' });
-    expect(grammar.selected.map((s) => s.id)).toEqual(['a']);
+    expect(grammar.selected.map((s) => s.id)).toEqual(['an', 'a']);
     expect(grammar.pendingRewrites).toEqual([]);
 
     const style = selectAcceptAll(all, { group: 'style' });
-    expect(style.selected.map((s) => s.id).sort()).toEqual(['b', 'bo']);
+    expect(style.selected.map((s) => s.id).sort()).toEqual(['b', 'bo', 'nm']);
     expect(style.pendingRewrites.map((s) => s.id)).toEqual(['rw']);
 
     const every = selectAcceptAll(all, { group: 'all' });
-    expect(every.selected.map((s) => s.id)).toEqual(['b', 'a']); // descending start; the overlapping B loses to A
+    expect(every.selected.map((s) => s.id)).toEqual(['nm', 'b', 'an', 'a']); // descending start; the overlapping style edit loses
     expect(every.excluded.map((s) => s.id)).toEqual(['bo']);
     expect(every.pendingRewrites.map((s) => s.id)).toEqual(['rw']);
 
     const subset = selectAcceptAll(all, { group: 'all', suggestionIds: ['b'] });
     expect(subset.selected.map((s) => s.id)).toEqual(['b']);
 
-    expect(acceptAllCounts(all)).toEqual({ grammar: 1, style: 2, rewrites: 1 });
+    expect(acceptAllCounts(all)).toEqual({ grammar: 2, style: 3, rewrites: 1 });
   });
 });
 

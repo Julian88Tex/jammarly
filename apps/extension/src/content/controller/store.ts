@@ -4,7 +4,7 @@
  * dismissed fingerprints and inverse-of-applied edits filtered out, ids kept stable. Also the Accept-all selection
  * (§3.2 tiers, research 02 §5) and the counts the floating button shows.
  */
-import type { AcceptAllScope, Edit, Suggestion, SuggestionCategory, TextRange } from '@jammarly/shared/types';
+import type { AcceptAllScope, AcceptGroup, Edit, Suggestion, SuggestionCategory, TextRange } from '@jammarly/shared/types';
 import { diffShift, normalizeForMatch, resolveOverlaps } from '@jammarly/shared/text';
 import type { AcceptAllCounts } from '../ui/overlay-api';
 import { shiftRangeThrough } from './text-model';
@@ -25,6 +25,18 @@ export const DEFAULT_FILTERS: StoreFilters = {
 
 export function isSpanEdit(s: Pick<Suggestion, 'kind'>): boolean {
   return s.kind === 'replace' || s.kind === 'delete' || s.kind === 'insert';
+}
+
+/**
+ * The Accept-all group a suggestion belongs to. Every span edit with a concrete replacement counts: correctness is
+ * 'grammar'; clarity, engagement and delivery are 'style' (style and tone). Rewrites (the user picks a version of the
+ * sentence), flags (nothing to apply) and stale suggestions belong to no group and stay for the user to review.
+ * This is the single rule behind every Accept-all count and action (popup, floating menu, side panel, sentence card),
+ * so the numbers always add up: grammar + style (+ overlaps) + needs-review = every suggestion.
+ */
+export function bulkGroupOf(s: Pick<Suggestion, 'kind' | 'stale' | 'category'>): AcceptGroup | null {
+  if (!isSpanEdit(s) || s.stale) return null;
+  return s.category === 'correctness' ? 'grammar' : 'style';
 }
 
 /** Key of an edit direction, normalized: used to suppress a suggestion that would revert an edit the user accepted. */
@@ -202,19 +214,16 @@ export interface AcceptAllSelection {
 }
 
 /**
- * Tier A for 'grammar', tier B for 'style', A ∪ B for 'all' (ARCHITECTURE §3.2): span edits only, never stale, never
- * meaning-changing, tier A only with an exact anchor; overlapping candidates resolved by priority.
+ * Everything bulk accept applies for a scope: the scope's group under bulkGroupOf ('all' = both groups), optionally
+ * narrowed to explicit ids; overlapping candidates are resolved by priority so one edit per span is applied.
  */
 export function selectAcceptAll(all: readonly Suggestion[], scope: AcceptAllScope): AcceptAllSelection {
-  const wantA = scope.group === 'grammar' || scope.group === 'all';
-  const wantB = scope.group === 'style' || scope.group === 'all';
   const only = scope.suggestionIds ? new Set(scope.suggestionIds) : null;
   const candidates = all.filter((s) => {
-    if (!isSpanEdit(s) || s.stale || !s.meaningPreserving) return false;
+    const group = bulkGroupOf(s);
+    if (group === null) return false;
     if (only && !only.has(s.id)) return false;
-    if (s.tier === 'A') return wantA && s.anchor === 'exact';
-    if (s.tier === 'B') return wantB;
-    return false;
+    return scope.group === 'all' || scope.group === group;
   });
   const picked = resolveOverlaps(candidates);
   const pickedIds = new Set(picked.map((p) => p.id));

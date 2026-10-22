@@ -7,7 +7,7 @@
  * UnderlineItems the controller handed over plus `adapter.getText()`, so no controller state is needed.
  *
  * Membership mirrors the controller's `selectAcceptAll` so every grouped id is one the controller will really apply:
- * kind replace | delete | insert, not stale, meaning-preserving, tier A with an exact anchor or tier B; overlapping
+ * bulkGroupOf (a span edit with a replacement that is not stale, in any category); overlapping
  * candidates are resolved with the same `resolveOverlaps` priority (losers are left out). On top of that a member
  * must lie inside the sentence (a range crossing a sentence boundary is never grouped) and its `original` must still
  * match the text at its range (stale offsets never group).
@@ -15,6 +15,7 @@
 import { resolveOverlaps, splitSentences } from '@jammarly/shared/text';
 import type { Suggestion, TextRange } from '@jammarly/shared/types';
 import type { UnderlineItem } from './overlay-api';
+import { bulkGroupOf } from '../controller/store';
 
 export interface SentenceGroup {
   /** The sentence range in the field text. */
@@ -29,10 +30,7 @@ export interface SentenceGroup {
 
 /** Same eligibility as the controller's selectAcceptAll for scope { group: 'all' }. */
 export function isGroupable(s: Suggestion): boolean {
-  if (s.kind !== 'replace' && s.kind !== 'delete' && s.kind !== 'insert') return false;
-  if (s.stale || !s.meaningPreserving) return false;
-  if (s.tier === 'A') return s.anchor === 'exact';
-  return s.tier === 'B';
+  return bulkGroupOf(s) !== null;
 }
 
 /** The range still holds the suggestion's original text (offsets are current). */

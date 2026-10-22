@@ -19,6 +19,7 @@ import type {
 } from '@jammarly/shared/types';
 import { CATEGORIES } from '@jammarly/shared/types';
 import type { PortStatus } from '../common/port';
+import { bulkGroupOf } from '../../content/controller/store';
 
 export const SCRATCH_FIELD_ID = 'panel:scratch';
 export const SCRATCH_HOST = 'sidepanel';
@@ -183,22 +184,26 @@ export interface TierCounts {
   rewrites: number;
 }
 
-/** Counts per Accept-all bucket: A = grammar, B = style, A ∪ B = everything; tier C needs a choice. */
+/** Counts per Accept-all bucket (the controller's bulkGroupOf rule); rewrites and flags need a choice. */
 export function tierCounts(suggestions: readonly Suggestion[]): TierCounts {
-  let a = 0;
-  let b = 0;
-  let c = 0;
+  let grammar = 0;
+  let style = 0;
+  let review = 0;
   for (const s of suggestions) {
-    if (s.tier === 'A') a += 1;
-    else if (s.tier === 'B') b += 1;
-    else c += 1;
+    const group = bulkGroupOf(s);
+    if (group === 'grammar') grammar += 1;
+    else if (group === 'style') style += 1;
+    else review += 1;
   }
-  return { grammar: a, style: b, all: a + b, rewrites: c };
+  return { grammar, style, all: grammar + style, rewrites: review };
 }
 
 /** The suggestions a bulk action would apply for a group. */
 export function tierSet(suggestions: readonly Suggestion[], group: AcceptAllGroup): Suggestion[] {
-  return suggestions.filter((s) => (group === 'grammar' ? s.tier === 'A' : group === 'style' ? s.tier === 'B' : s.tier === 'A' || s.tier === 'B'));
+  return suggestions.filter((s) => {
+    const g = bulkGroupOf(s);
+    return g !== null && (group === 'all' || group === g);
+  });
 }
 
 export function groupByCategory(suggestions: readonly Suggestion[]): { category: SuggestionCategory; items: Suggestion[] }[] {

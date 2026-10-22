@@ -335,3 +335,20 @@ describe('popup field actions (moved from the floating button)', () => {
     expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'set-field-enabled', fieldId: 'f1', enabled: true } });
   });
 });
+
+describe('popup counts add up', () => {
+  it('counts every fixable suggestion whatever its tier and lists the rest as needing a choice', async () => {
+    await mount();
+    const grammar = suggestionStub('g1', 'correctness');
+    const hedge = { ...suggestionStub('h1', 'delivery'), tier: 'C' as const, meaningPreserving: false, kind: 'delete' as const, replacement: '', range: { start: 10, end: 18 }, highlight: { start: 10, end: 18 } };
+    const wordy = { ...suggestionStub('w1', 'clarity'), tier: 'B' as const, range: { start: 20, end: 30 }, highlight: { start: 20, end: 30 } };
+    const rewrite = { ...suggestionStub('r1', 'clarity'), tier: 'C' as const, kind: 'rewrite' as const, range: { start: 40, end: 80 }, highlight: { start: 40, end: 80 } };
+    mock.ports[0]!.emit({ type: 'field-state', state: field({ suggestions: [grammar, hedge, wordy, rewrite] }) });
+    await flush();
+    const text = (key: string) => root.querySelector(`[data-focus-key="${key}"]`)?.textContent ?? '';
+    expect(text('accept-grammar')).toContain('1');
+    expect(text('accept-style')).toContain('2');
+    expect(text('accept-all')).toContain('3');
+    expect(root.querySelector('.jm-action-note')?.textContent).toBe('1 suggestion needs your choice in the review panel.');
+  });
+});
