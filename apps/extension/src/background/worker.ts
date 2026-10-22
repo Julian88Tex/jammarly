@@ -8,6 +8,7 @@ import { createHub, type Hub } from './ports';
 import { registerCommands } from './commands';
 import { registerRuntimeHandlers } from './runtime';
 import { ALARM_SWEEP } from './sync/client';
+import { ALARM_DEV_RELOAD, createDevReload } from './dev-reload';
 
 export interface Worker {
   core: CoreWithActivity;
@@ -91,7 +92,12 @@ export function createWorker(deps: CoreDeps): Worker {
   c?.runtime?.onStartup.addListener(() => {
     void onStartup().catch((err) => console.debug('[jammarly] onStartup failed', err));
   });
+  const devReload = createDevReload({ chrome: c as never });
   c?.alarms?.onAlarm.addListener((alarm) => {
+    if (alarm.name === ALARM_DEV_RELOAD) {
+      void devReload.check().catch((err) => console.debug('[jammarly] dev reload check failed', err));
+      return;
+    }
     void core.ready.then(async () => {
       if (alarm.name === ALARM_SWEEP) await core.sweepDismissals();
       else await core.sync.handleAlarm(alarm.name);
@@ -100,6 +106,8 @@ export function createWorker(deps: CoreDeps): Worker {
 
   // A cold start (not only chrome's onStartup) also surfaces requests left in flight by a terminated worker.
   const ready = core.ready.then(onStartup);
+  // Unpacked installs only: reload when a newer build lands in the extension folder.
+  void devReload.start().catch((err) => console.debug('[jammarly] dev reload unavailable', err));
 
   return { core, hub, ready, onInstalled, onStartup };
 }

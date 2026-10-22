@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 // Build script: bundles each extension entry point with esbuild and copies static assets.
 // Usage: node scripts/build.mjs [--watch] [--dev]
 import * as esbuild from 'esbuild';
@@ -87,6 +88,18 @@ async function copyStatic() {
       manifest.externally_connectable = { matches: [] };
     }
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+    // build.json identifies this exact build. An unpacked install compares it with the copy on disk and reloads
+    // itself when a newer build lands in its folder (see src/background/dev-reload.ts).
+    let commit = process.env.GITHUB_SHA ?? '';
+    if (!commit) {
+      try {
+        commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+      } catch {
+        commit = 'unknown';
+      }
+    }
+    const build = { version: pkg.version, commit, builtAt: new Date().toISOString() };
+    await writeFile(path.join(dist, 'build.json'), JSON.stringify(build, null, 2) + '\n');
   }
 }
 
