@@ -5,6 +5,10 @@
  * It wires `createOverlay` to a fake adapter over the fixture's contenteditable, derives suggestions from the
  * `<span data-err>` markers (rects from `getClientRects()`), and records every OverlayEvents callback on
  * `window.__jm.events` so the spec can assert what the controller would have received.
+ *
+ * The page must be opened in a Chromium context WITHOUT the extension (overlay.spec.ts overrides `context`): the
+ * real content script would create a second overlay in this document and `createOverlay` keeps exactly one
+ * `<jammarly-root>` per document, evicting the harness's host (0 underlines, no `f1` button for the spec).
  */
 import type { Suggestion, SuggestionCategory, SuggestionKind, SuggestionTier, CheckError, CheckPass, FieldStatus } from '@jammarly/shared/types';
 import type { FieldAdapter } from '../../../src/content/field-adapter';

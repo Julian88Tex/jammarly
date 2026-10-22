@@ -2,9 +2,29 @@
  * Overlay UI in real Chromium: the parts jsdom cannot run (Popover API top layer, adoptedStyleSheets, real pointer
  * hit-testing against fragment rects, color-mix tint, button geometry). The harness bundle is built from
  * tests/e2e/harness/overlay-harness.ts before the suite runs.
+ *
+ * The harness page drives `createOverlay` itself, so it must not be opened in the extension's persistent context:
+ * the real content script (run_at document_idle, every http page) would attach a second overlay there and, per the
+ * one-host-per-document rule (ARCHITECTURE 3.5, `OverlayImpl` evicts stale hosts), remove the harness's host, leaving
+ * the spec looking at the extension's empty one. This spec therefore overrides `context` with a plain Chromium context
+ * (no `--load-extension`, no dist/ needed); the overlay inside the real extension is covered by flow.spec.ts.
  */
-import { test, expect, bundleFixtureScript } from './fixtures';
-import type { Page } from '@playwright/test';
+import { test as extensionTest, expect, bundleFixtureScript } from './fixtures';
+import { chromium, type Page } from '@playwright/test';
+
+const test = extensionTest.extend({
+  // eslint-disable-next-line no-empty-pattern
+  context: async ({}, use) => {
+    const browser = await chromium.launch({
+      channel: 'chromium', // same build as fixtures.ts; the extension is deliberately not loaded here
+      headless: process.env.PW_HEADFUL ? false : true,
+    });
+    const context = await browser.newContext();
+    await use(context);
+    await context.close();
+    await browser.close();
+  },
+});
 
 test.beforeAll(async () => {
   await bundleFixtureScript('tests/e2e/harness/overlay-harness.ts', 'overlay-harness.js');
@@ -96,14 +116,16 @@ test.describe('overlay UI (Chromium)', () => {
     expect(cardBox.width).toBeGreaterThanOrEqual(280);
     expect(cardBox.width).toBeLessThanOrEqual(360);
 
-    // active underline: 3 px and a tint behind the text
-    const active = await page.evaluate(() => {
-      const root = document.querySelector('jammarly-root')!.shadowRoot!;
-      const ul = root.querySelector<HTMLElement>('[data-jm="underline"][data-suggestion-id="s1"]')!;
-      const tint = root.querySelector<HTMLElement>('[data-jm="underline-tint"]');
-      return { height: ul.getBoundingClientRect().height, tint: tint ? getComputedStyle(tint).backgroundColor : null, tintHidden: tint?.hasAttribute('hidden') };
-    });
-    expect(active.height).toBe(3);
+    // active underline: 3 px (height has an 80 ms transition, so poll) and a tint behind the text
+    const readActive = () =>
+      page.evaluate(() => {
+        const root = document.querySelector('jammarly-root')!.shadowRoot!;
+        const ul = root.querySelector<HTMLElement>('[data-jm="underline"][data-suggestion-id="s1"]')!;
+        const tint = root.querySelector<HTMLElement>('[data-jm="underline-tint"]');
+        return { height: ul.getBoundingClientRect().height, tint: tint ? getComputedStyle(tint).backgroundColor : null, tintHidden: tint?.hasAttribute('hidden') };
+      });
+    await expect.poll(async () => (await readActive()).height).toBe(3);
+    const active = await readActive();
     expect(active.tint).toMatch(/^(rgba|color)\(/);
     expect(active.tintHidden).toBe(false);
 
@@ -208,7 +230,8 @@ test.describe('overlay UI (Chromium)', () => {
     expect(btnBox.height).toBe(28);
     expect(Math.abs(btnBox.x + btnBox.width - (editorBox.x + editorBox.width - 8))).toBeLessThan(1.5);
     expect(Math.abs(btnBox.y + btnBox.height - (editorBox.y + editorBox.height - 8))).toBeLessThan(1.5);
-    expect(await button.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(224, 55, 44)');
+    // background-color has a 150 ms transition (idle -> count on load), so this assertion retries
+    await expect(button).toHaveCSS('background-color', 'rgb(224, 55, 44)');
 
     await page.evaluate(() => window.__jm.setTyping(true));
     await expect(button).toHaveAttribute('data-state', 'collapsed');
