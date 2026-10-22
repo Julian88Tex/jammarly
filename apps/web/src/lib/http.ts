@@ -5,19 +5,10 @@
 import type { ZodType } from 'zod';
 import type { ApiError, ApiErrorCode } from '@jammarly/shared/api';
 import { EnvError } from './env';
+import { ApiRouteError } from './errors';
 import { corsHeadersFor, enforceOriginPolicy, type OriginPolicy } from './cors';
 
-export class ApiRouteError extends Error {
-  override readonly name = 'ApiRouteError';
-  constructor(
-    readonly status: number,
-    readonly code: ApiErrorCode,
-    message: string,
-    readonly extra: Record<string, unknown> = {},
-  ) {
-    super(message);
-  }
-}
+export { ApiRouteError };
 
 export const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8' } as const;
 

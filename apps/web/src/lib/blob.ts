@@ -32,6 +32,9 @@ export interface BlobListEntry {
 export interface BlobStore {
   getJson<T>(path: string, opts?: { ifNoneMatch?: string }): Promise<BlobGetResult<T>>;
   putJson(path: string, value: unknown, opts?: { ifMatch?: string; allowOverwrite?: boolean }): Promise<{ etag: string }>;
+  /** Raw text (JSONL batches). */
+  getText(path: string): Promise<{ text: string; etag: string } | null>;
+  putText(path: string, text: string, opts?: { ifMatch?: string; allowOverwrite?: boolean }): Promise<{ etag: string }>;
   del(path: string | string[]): Promise<void>;
   list(prefix: string): Promise<BlobListEntry[]>;
 }
@@ -95,6 +98,16 @@ export class MemoryBlobStore implements BlobStore {
   }
 
   async putJson(path: string, value: unknown, opts: { ifMatch?: string; allowOverwrite?: boolean } = {}): Promise<{ etag: string }> {
+    return this.putText(path, JSON.stringify(value), opts);
+  }
+
+  async getText(path: string): Promise<{ text: string; etag: string } | null> {
+    this.ops.reads += 1;
+    const entry = this.entries.get(path);
+    return entry === undefined ? null : { text: entry.body, etag: entry.etag };
+  }
+
+  async putText(path: string, text: string, opts: { ifMatch?: string; allowOverwrite?: boolean } = {}): Promise<{ etag: string }> {
     this.ops.writes += 1;
     const existing = this.entries.get(path);
     if (opts.ifMatch !== undefined) {
@@ -102,10 +115,9 @@ export class MemoryBlobStore implements BlobStore {
     } else if (existing !== undefined && opts.allowOverwrite === false) {
       throw new BlobAlreadyExists(path);
     }
-    const body = JSON.stringify(value);
     this.counter += 1;
-    const etag = `"${this.counter}-${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
-    this.entries.set(path, { body, etag, uploadedAt: new Date(this.now()).toISOString() });
+    const etag = `"${this.counter}-${createHash('sha256').update(text).digest('hex').slice(0, 16)}"`;
+    this.entries.set(path, { body: text, etag, uploadedAt: new Date(this.now()).toISOString() });
     return { etag };
   }
 
@@ -155,33 +167,46 @@ export class VercelBlobStore implements BlobStore {
     return this.token === undefined ? {} : { token: this.token };
   }
 
-  async getJson<T>(path: string, opts: { ifNoneMatch?: string } = {}): Promise<BlobGetResult<T>> {
+  private async fetchText(path: string, ifNoneMatch?: string): Promise<{ text: string; etag: string } | { notModified: true } | null> {
     const sdk = await this.load();
     try {
       const res = await sdk.get(path, {
         access: 'private',
         useCache: false,
-        ...(opts.ifNoneMatch !== undefined ? { ifNoneMatch: opts.ifNoneMatch } : {}),
+        ...(ifNoneMatch !== undefined ? { ifNoneMatch } : {}),
         ...this.common(),
       });
       if (res === null) return null;
       if (res.statusCode === 304) return { notModified: true };
       const text = await new Response(res.stream).text();
-      return { value: JSON.parse(text) as T, etag: res.blob.etag };
+      return { text, etag: res.blob.etag };
     } catch (err) {
       if (err instanceof sdk.BlobNotFoundError) return null;
       throw err;
     }
   }
 
-  async putJson(path: string, value: unknown, opts: { ifMatch?: string; allowOverwrite?: boolean } = {}): Promise<{ etag: string }> {
+  async getJson<T>(path: string, opts: { ifNoneMatch?: string } = {}): Promise<BlobGetResult<T>> {
+    const res = await this.fetchText(path, opts.ifNoneMatch);
+    if (res === null) return null;
+    if ('notModified' in res) return res;
+    return { value: JSON.parse(res.text) as T, etag: res.etag };
+  }
+
+  async getText(path: string): Promise<{ text: string; etag: string } | null> {
+    const res = await this.fetchText(path);
+    if (res === null || 'notModified' in res) return null;
+    return res;
+  }
+
+  async putText(path: string, text: string, opts: { ifMatch?: string; allowOverwrite?: boolean } = {}, contentType = 'application/x-ndjson'): Promise<{ etag: string }> {
     const sdk = await this.load();
     try {
-      const res = await sdk.put(path, JSON.stringify(value), {
+      const res = await sdk.put(path, text, {
         access: 'private',
         allowOverwrite: opts.allowOverwrite ?? true,
         addRandomSuffix: false,
-        contentType: 'application/json',
+        contentType,
         ...(opts.ifMatch !== undefined ? { ifMatch: opts.ifMatch } : {}),
         ...this.common(),
       });
@@ -190,6 +215,10 @@ export class VercelBlobStore implements BlobStore {
       if (err instanceof sdk.BlobPreconditionFailedError) throw new PreconditionFailed(path);
       throw err;
     }
+  }
+
+  async putJson(path: string, value: unknown, opts: { ifMatch?: string; allowOverwrite?: boolean } = {}): Promise<{ etag: string }> {
+    return this.putText(path, JSON.stringify(value), opts, 'application/json');
   }
 
   async del(path: string | string[]): Promise<void> {

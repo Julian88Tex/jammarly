@@ -5,7 +5,7 @@
  */
 import { getIronSession, webCookies, type IronSession, type SessionOptions } from 'iron-session';
 import { getEnv } from './env';
-import { ApiRouteError } from './http';
+import { ApiRouteError } from './errors';
 
 export const SESSION_COOKIE = 'jammarly_session';
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;

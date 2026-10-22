@@ -8,7 +8,7 @@
  * - Device routes reject browser origins that are not an allowed extension with 403.
  */
 import { getEnv } from './env';
-import { ApiRouteError } from './http';
+import { ApiRouteError } from './errors';
 
 export type OriginPolicy = 'owner' | 'device' | 'shared' | 'public';
 

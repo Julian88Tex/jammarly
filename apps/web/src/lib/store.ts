@@ -7,13 +7,11 @@
  * counters stay roughly right for the dashboard's 80 % warning.
  */
 import { createClock, parseHlc, type HlcClock } from '@jammarly/shared/hlc';
-import { applyOps, cloneData, isLwwPath, isSetPath, ProfileDocumentSchema, ProfileOpSchema } from '@jammarly/shared/merge';
-import { defaultProfile, type ProfileDocument, type ProfileOp } from '@jammarly/shared/profile';
-import { migrateProfile } from '@jammarly/shared/merge';
-import type { Hlc } from '@jammarly/shared/profile';
+import { applyOps, cloneData, isLwwPath, isSetPath, migrateProfile, ProfileDocumentSchema, ProfileOpSchema } from '@jammarly/shared/merge';
+import { defaultProfile, type Hlc, type ProfileDocument, type ProfileOp } from '@jammarly/shared/profile';
 import { getBlobStore, type BlobGetResult, type BlobListEntry, type BlobStore, etagsEqual, isNotModified, PreconditionFailed } from './blob';
 import { randomHex } from './crypto';
-import { ApiRouteError } from './http';
+import { ApiRouteError } from './errors';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -95,6 +93,14 @@ class CountingStore implements BlobStore {
   putJson(path: string, value: unknown, opts?: { ifMatch?: string; allowOverwrite?: boolean }): Promise<{ etag: string }> {
     pending.advanced += 1;
     return this.inner.putJson(path, value, opts);
+  }
+  getText(path: string): Promise<{ text: string; etag: string } | null> {
+    pending.simple += 1;
+    return this.inner.getText(path);
+  }
+  putText(path: string, text: string, opts?: { ifMatch?: string; allowOverwrite?: boolean }): Promise<{ etag: string }> {
+    pending.advanced += 1;
+    return this.inner.putText(path, text, opts);
   }
   del(path: string | string[]): Promise<void> {
     return this.inner.del(path);
