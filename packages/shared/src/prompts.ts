@@ -58,7 +58,7 @@ export {
   CUSTOM_INSTRUCTIONS_PREAMBLE,
 } from './prompts/messages';
 export type { MaskKind, MaskedBlock, MaskResult, SystemBlock, CheckPromptOptions, CheckMessages } from './prompts/messages';
-export { anchorSuggestions, tierFor, fingerprintFor, trimCommonAffixes, alignReplacement, adjacentWord, MIN_CONFIDENCE } from './prompts/anchor';
+export { anchorSuggestions, tierFor, fingerprintFor, trimCommonAffixes, alignReplacement, adjacentWord, locateOriginal, normalizeBlockId, MIN_CONFIDENCE } from './prompts/anchor';
 export type { AnchorDropReason, AnchorOptions, AnchorResult, DroppedSuggestion, TrimmedEdit } from './prompts/anchor';
 export {
   VOICE_CAPS,

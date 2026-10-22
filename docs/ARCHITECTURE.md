@@ -120,10 +120,13 @@ tears down its overlay, observers and timers; orphans also self-destroy when `ch
   spacing, repeated words, sentence-initial capitalization, lone `i`, a/an, high-precision confusables (`could of`),
   doubled punctuation, trailing whitespace. They never run inside protected spans (`stripUrlsAndCode`).
 * **Claude passes** run in the service worker. Default **hybrid** mode: a fast pass with `claude-haiku-5-5`
-  (thinking disabled, effort low) when a block is dirty and the user pauses 700 ms or ends a sentence, and a deep
+  (thinking disabled, effort medium) when a block is dirty and the user pauses 700 ms or ends a sentence, and a deep
   pass with `claude-opus-5-5` (adaptive thinking, effort medium) after 2.5 s idle, blur, or paste. Modes `quality`
   (Opus only) and `economy` (Haiku only) are settings. Effort is fixed per pass so the prompt cache stays warm
-  [R02 reviewer A3].
+  [R02 reviewer A3]; the fast pass moved from low to medium because low effort returned shorter suggestion lists.
+  The system prompt (v4) asks for a Grammarly-level pass: every issue in every sentence, several non-overlapping
+  suggestions per sentence, calibrated confidence (0.5 floor), with the minimal-edit, verbatim-anchor and meaning
+  rules unchanged.
 * Calls use `client.messages.stream()` with `output_config.format` (JSON schema), `cache_control` on the two system
   blocks (contract, voice profile), `AbortController` per field, `maxRetries: 1`, `timeout: 120_000`. The Opus pass
   sends `betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default'`. `stop_reason === 'refusal'` and
@@ -131,14 +134,23 @@ tears down its overlay, observers and timers; orphans also self-destroy when `ch
 * **Tone** is a separate Haiku call on the whole field (≥ 150 characters, 1.5 s idle, keyed by the hash of the first
   2,500 characters, thinking disabled, effort low, `max_tokens` 300) with its own byte-stable system prompt and a
   `{ tone, rationale }` schema; it arrives as a `tone` port message. `document.tone` from a suggestion response is
-  used only when that response covered every block [R02 §8.6].
-* **Request budget.** Each call carries ≤ 4 dirty blocks and ≤ ~1,200 words (≈ 2,200 tokens at 1.8 tokens/word;
-  longer fields are sharded into several calls) plus ≤ 1 sentence of read-only `context_before` / `context_after`.
-  `max_tokens`: fast pass 4,096 (thinking disabled), deep pass 16,000 (adaptive thinking is billed as output). On
+  used only when that response covered every block [R02 §8.6]; in that case no tone call is made at all. Otherwise a
+  field gets at most one tone call per minute unless its length changed by 25 % or more.
+* **Request budget.** Each call carries ≤ 40 dirty blocks and ≤ ~1,200 words (≈ 2,200 tokens at 1.8 tokens/word;
+  longer fields are sharded into several calls) plus ≤ 1 sentence of read-only `context_before` / `context_after`,
+  so a normal email is one call per pass. `max_tokens`: fast pass 16,000 (thinking disabled), deep pass 32,000
+  (adaptive thinking is billed as output; OTPM limits count generated tokens, not `max_tokens`). On
   `stop_reason === 'max_tokens'` the worker re-requests the same blocks split in half (once); blocks still truncated
   get `error.code: 'truncated'` and the tooltip "Couldn't check one paragraph". At most 3 requests in flight per key
-  across tabs; stale requests are aborted. 429 honours `retry-after`; `enforced_spend_limit_reached` maps to
-  `spend-cap` (not retryable) and 401 to `auth`, each with its own button state and tooltip [R02 reviewer A5, A6; R05 M1].
+  across tabs. A fast and a deep pass of one field never call at the same time: the deep pass waits for a running
+  fast call, and a fast pass that has not sent yet yields to a pending deep pass for the same text and is served
+  from its cache entries. A stale request is aborted only while its call has not been sent; a sent call finishes
+  silently (filling the cache) and newer requests wait for it, so a burst of edits collapses into one trailing call.
+  429 honours `retry-after` through a shared cooldown with two retries; a deep pass still throttled is re-run once
+  (after the next successful fast pass for that text, or on its own after the cooldown). A failed pass still carries
+  the field's cached suggestions; a partly failed pass emits the successful result first and the error second.
+  `enforced_spend_limit_reached` maps to `spend-cap` (not retryable) and 401 to `auth`, each with its own button
+  state and tooltip [R02 reviewer A5, A6; R05 M1].
 * **Daily budget.** `DeviceSettings.dailyBudgetUsd` (default 2.00; 0 = unlimited). When today's cost reaches it the
   worker skips deep passes (behaves as `economy`); when even Haiku would exceed it, checks answer `error.code: 'budget'`
   and the button shows a budget chip ("Daily budget reached, Haiku only until midnight"). Today's and the month's cost

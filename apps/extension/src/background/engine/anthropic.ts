@@ -14,8 +14,14 @@ import { ProviderError } from './provider';
 
 export const KEY_TEST_MODEL = 'claude-haiku-5-5';
 export const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
-export const MAX_TOKENS_FAST = 4096;
-export const MAX_TOKENS_DEEP = 16000;
+/**
+ * Output budgets. A thorough pass writes about 100 tokens per suggestion, and one call now carries a whole email
+ * (up to 1,200 words), so the old 4,096 truncated busy drafts. OTPM rate limits count the tokens actually
+ * generated, not max_tokens, so a generous ceiling costs nothing; the deep budget also covers adaptive thinking.
+ * Both calls stream, so large values never hit the SDK's non-streaming timeout guard.
+ */
+export const MAX_TOKENS_FAST = 16000;
+export const MAX_TOKENS_DEEP = 32000;
 /** The separate tone call's output budget (ARCHITECTURE §3.3), from the shared tone module. */
 export const MAX_TOKENS_TONE: number = TONE_MAX_TOKENS;
 

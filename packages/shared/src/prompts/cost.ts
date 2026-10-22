@@ -60,9 +60,14 @@ export function estimateCostUsd(model: string, usage: UsageTokens): number {
 export type Effort = 'low' | 'medium';
 export type ThinkingConfig = { type: 'disabled' } | { type: 'adaptive' };
 
-/** Effort is fixed per pass so the prompt cache stays warm (effort is rendered into the cached prefix). */
-export function effortFor(pass: Exclude<CheckPass, 'rules'>): Effort {
-  return pass === 'fast' ? 'low' : 'medium';
+/**
+ * Effort is fixed per pass so the prompt cache stays warm (effort is rendered into the cached prefix). Both passes
+ * run at medium, the default of Haiku 5.5 and Opus 5.5: at low effort the fast pass returned terser, shorter
+ * suggestion lists, which cost recall on a task whose whole point is an exhaustive list. The fast pass stays fast
+ * because Haiku runs it with thinking disabled.
+ */
+export function effortFor(_pass: Exclude<CheckPass, 'rules'>): Effort {
+  return 'medium';
 }
 
 /**

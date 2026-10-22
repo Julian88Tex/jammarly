@@ -62,4 +62,25 @@ describe('field session: rate limits', () => {
     expect(h.messages('check').length - start).toBe(3);
     h.session.dispose();
   });
+  it('keeps a separate retry per pass so a fast retry does not cancel a deep retry', () => {
+    const h = makeSession({ text: TEXT });
+    const req = firstCheck(h);
+    const before = h.messages('check').length;
+    const err = { code: 'rate-limit' as const, message: 'slow', retryable: true, retryAfterMs: 5000 };
+    const deepReq = { ...req, pass: 'deep' as const };
+    const fastReq = { ...req, pass: 'fast' as const };
+    // Both passes are in flight for this version (fast for text that has since changed), then both are rate limited.
+    const internals = h.session as unknown as { inflight: Record<string, { version: number; textHash: string; request: unknown }> };
+    const hash = internals.inflight[req.pass]?.textHash ?? '';
+    internals.inflight = {
+      deep: { version: req.version, textHash: hash, request: deepReq },
+      fast: { version: req.version, textHash: 'stale', request: fastReq },
+    };
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [], { pass: 'deep', error: err }) });
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [], { pass: 'fast', error: err }) });
+    vi.advanceTimersByTime(6000);
+    const passes = h.messages('check').slice(before).map((m) => m.request.pass).sort();
+    expect(passes).toContain('deep');
+    h.session.dispose();
+  });
 });

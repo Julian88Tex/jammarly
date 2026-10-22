@@ -3,13 +3,13 @@ import type { CheckRequest, CheckResult, DeviceSettings, EffectiveConfig, Engine
 import { DEFAULT_DEVICE_SETTINGS } from '@jammarly/shared/types';
 import type { LearnedRuleState, ProfileDocument } from '@jammarly/shared/profile';
 import { defaultProfile } from '@jammarly/shared/profile';
-import { applyEdits, splitParagraphs } from '@jammarly/shared/text';
-import { createEngine, computeCacheKey, shardBlocks, type EngineMessage } from '../../src/background/engine/orchestrator';
+import { applyEdits, countWords, splitParagraphs } from '@jammarly/shared/text';
+import { createEngine, computeCacheKey, MAX_BLOCKS_PER_CALL, shardBlocks, type EngineMessage } from '../../src/background/engine/orchestrator';
 import { createBlockCache } from '../../src/background/engine/cache';
 import { createMockProvider, requestForBlocks } from '../../src/background/engine/mock';
 import type { Provider, ProviderCheckInput, ProviderResult } from '../../src/background/engine/provider';
 import { ProviderError, ZERO_USAGE } from '../../src/background/engine/provider';
-import { createToneRunner } from '../../src/background/engine/tone';
+import { createToneRunner, TONE_MIN_INTERVAL_MS } from '../../src/background/engine/tone';
 import { computeEffectiveConfig } from '../../src/background/config';
 import { encodeMute, mockCheck, statsKey } from '../../src/background/shared-engine';
 import type { LearnedStateView } from '../../src/background/learning/fold';
@@ -62,7 +62,7 @@ interface Harness {
   configFor(host: string): EffectiveConfig;
 }
 
-function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>; profile?: ProfileDocument; learned?: LearnedStateView; maxConcurrent?: number; tone?: boolean; keepalive?: { begin(): void; end(): void } } = {}): Harness {
+function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>; profile?: ProfileDocument; learned?: LearnedStateView; maxConcurrent?: number; tone?: boolean; keepalive?: { begin(): void; end(): void }; owedRetryMs?: number } = {}): Harness {
   const settings: DeviceSettings = { ...DEFAULT_DEVICE_SETTINGS, provider: 'mock', ...opts.settings };
   const profile = opts.profile ?? defaultProfile();
   const learned: LearnedStateView = opts.learned ?? NO_LEARNED;
@@ -88,7 +88,7 @@ function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>
     ...(opts.tone ? { tone: createToneRunner() } : {}),
     ...(opts.keepalive ? { keepalive: opts.keepalive } : {}),
     ...(opts.maxConcurrent !== undefined ? { maxConcurrent: opts.maxConcurrent } : {}),
-    rateLimit: { minWaitMs: 1, maxWaitMs: 20, backoffMs: [5, 10] },
+    rateLimit: { minWaitMs: 1, maxWaitMs: 20, backoffMs: [5, 10], owedRetryMs: opts.owedRetryMs ?? 60_000 },
   });
   const configFor = (host: string): EffectiveConfig =>
     computeEffectiveConfig({ host, settings, profile, learned, sessionOff: { hosts: [], fields: [] }, runtimeId: 'id', usage: ledger });
@@ -289,16 +289,21 @@ describe('orchestrator with the mock provider', () => {
     const provider = scriptedProvider((_call, input) => (input.blockIds.includes('b0') ? new ProviderError('truncated', 'cut', false) : 'ok'));
     const h = harness({ provider });
     await h.check(request(`${TEXT}\n${PARA2}`));
-    const result = h.results[0]!;
-    expect(result.error).toEqual({ code: 'truncated', retryable: false, message: "Couldn't check one paragraph" });
-    expect(result.blocks.map((b) => b.hash)).toEqual([request(PARA2).blocks[0]!.hash]);
-    expect(result.suggestions.some((s) => s.original === 'recieve')).toBe(true);
+    // The paragraphs that came back arrive first without an error (the content script only applies error-free
+    // results), then the same result carries the error for the paragraph that failed.
+    expect(h.results).toHaveLength(2);
+    const [ok, failed] = h.results;
+    expect(ok!.error).toBeUndefined();
+    expect(ok!.blocks.map((b) => b.hash)).toEqual([request(PARA2).blocks[0]!.hash]);
+    expect(ok!.suggestions.some((s) => s.original === 'recieve')).toBe(true);
+    expect(failed!.error).toEqual({ code: 'truncated', retryable: false, message: "Couldn't check one paragraph" });
+    expect(failed!.suggestions).toEqual(ok!.suggestions);
   });
 
-  it('shards needed blocks into calls of at most 4 blocks and ~1,200 words', () => {
-    const many = Array.from({ length: 9 }, (_, i) => `Paragraph ${i} is short.`).join('\n');
+  it('shards needed blocks into calls of at most 40 blocks and ~1,200 words', () => {
+    const many = Array.from({ length: 45 }, (_, i) => `Paragraph ${i} is short.`).join('\n');
     const shards = shardBlocks(splitParagraphs(many));
-    expect(shards.map((s) => s.length)).toEqual([4, 4, 1]);
+    expect(shards.map((s) => s.length)).toEqual([40, 5]);
     const long = Array.from({ length: 3 }, () => Array(700).fill('word').join(' ')).join('\n');
     expect(shardBlocks(splitParagraphs(long)).map((s) => s.length)).toEqual([1, 1, 1]);
   });
@@ -405,13 +410,24 @@ describe('orchestrator with the mock provider', () => {
     expect(result.score).toBeDefined();
   });
 
-  it('carries document tone when one call covered every block and emits the separate tone message for long fields', async () => {
+  it('carries document tone when one call covered every block, and then makes no separate tone call', async () => {
     const h = harness({ tone: true });
     const long = `${TEXT} ${PARA2} Please let me know if this works for you, thanks!`;
     await h.check(request(long));
     const result = h.results[0]!;
     expect(result.tone?.labels.length).toBeGreaterThan(0);
     expect(result.tone?.summary).toMatch(/^Sounds /);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.messages.some((m) => m.type === 'tone')).toBe(false);
+  });
+
+  it('emits the separate tone message when the call covered only part of a long field', async () => {
+    const h = harness({ tone: true });
+    const text = `${TEXT}\n${PARA2} Please let me know if this works for you, thanks!`;
+    const req = request(text);
+    req.dirtyBlockHashes = [req.blocks[1]!.hash];
+    await h.check(req);
+    expect(h.results[0]!.tone).toBeUndefined();
     await new Promise((r) => setTimeout(r, 20));
     const tone = h.messages.find((m) => m.type === 'tone') as Extract<EngineMessage, { type: 'tone' }> | undefined;
     expect(tone).toBeDefined();
@@ -496,5 +512,285 @@ describe('orchestrator with the mock provider', () => {
     expect(ends).toBe(1);
     await h.check(request(TEXT, { version: 2 })); // cached: no call, no keepalive
     expect(begins).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Request budget for low-tier keys (few requests per minute; short bursts trip the limiter)
+// ---------------------------------------------------------------------------------------------------------------
+
+/** A ~216-word, 6-paragraph casual work email (greeting, four body paragraphs, sign-off). */
+const EMAIL = [
+  'Hi Sam',
+  'I just wanted to give you a quick update on the Henderson project. Their was a delay with the vendor so the report wont be ready until next week, I think. The data was reviewed by the analytics team on monday and they said it looks really good overall.',
+  'I was wondering if maybe we could move our meeting to thursday? Sorry for the late notice, and sorry again for the delay. In order to finalize the budget we need to make a decision about the staffing plan asap, because the client keeps asking about the timeline.',
+  'Also, the new dashboard is really nice and the team did a great job on it. There is alot of good stuff in there and I think the client will like it alot. Let me know if you have any questions about the numbers before we send it over to them on friday.',
+  'Finally, could you please double check the invoice amounts? I think there might be a mistake in the second invoice but im not totally sure. If its wrong we should fix it before the end of the month so accounting is happy. We can also talk about it at the meeting if that is easier for you.',
+  'Thanks so much, Dana',
+].join('\n');
+
+interface CallLog {
+  pass: 'fast' | 'deep';
+  model: string;
+  fieldId: string;
+  blockIds: string[];
+  start: number;
+  end: number;
+}
+
+/** The mock engine's answers with a call log, per-call scripting and a tone call that returns real labels. */
+function budgetProvider(opts: { delayMs?: number; script?: (call: CallLog, n: number) => 'ok' | ProviderError } = {}): Provider & { calls: CallLog[]; toneCalls: number } {
+  const calls: CallLog[] = [];
+  const p = {
+    kind: 'anthropic' as const,
+    calls,
+    toneCalls: 0,
+    async check(input: ProviderCheckInput, o: { model: string; pass: 'fast' | 'deep'; signal?: AbortSignal }): Promise<ProviderResult> {
+      const log: CallLog = { pass: o.pass, model: o.model, fieldId: input.request.fieldId, blockIds: input.blockIds, start: performance.now(), end: Number.POSITIVE_INFINITY };
+      calls.push(log);
+      await new Promise((r) => setTimeout(r, opts.delayMs ?? 5));
+      log.end = performance.now();
+      if (o.signal?.aborted) throw new ProviderError('cancelled', 'cancelled', true);
+      const verdict = opts.script?.(log, calls.length) ?? 'ok';
+      if (verdict !== 'ok') throw verdict;
+      const usage: TokenUsage = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 };
+      return { output: mockOutputFor(input), usage, model: o.model, stopReason: 'end_turn' };
+    },
+    async tone(): Promise<ProviderResult> {
+      p.toneCalls++;
+      return { output: { tone: [{ label: 'friendly', strength: 'moderate' }], rationale: 'Sounds friendly.' }, usage: { ...ZERO_USAGE }, model: 'claude-haiku-5-5', stopReason: 'end_turn' };
+    },
+  };
+  return p;
+}
+
+const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** The deep pass the content script sends after a fast pass: every block it has not seen at deep rank. */
+function deepAfter(req: CheckRequest, version: number, dirty?: string[]): CheckRequest {
+  return { ...req, version, pass: 'deep', dirtyBlockHashes: dirty ?? req.blocks.map((b) => b.hash) };
+}
+
+describe('request budget for low-tier keys', () => {
+  it('the fixture is a ~216-word, 6-paragraph email that the old 4-block cap split into two calls per pass', () => {
+    expect(countWords(EMAIL)).toBeGreaterThanOrEqual(200);
+    expect(countWords(EMAIL)).toBeLessThanOrEqual(230);
+    const paragraphs = splitParagraphs(EMAIL);
+    expect(paragraphs).toHaveLength(6);
+    // Before: MAX_BLOCKS_PER_CALL = 4 meant 2 calls per pass (+ 1 tone call) = 5 calls per pause.
+    expect(shardBlocks(paragraphs, 4)).toHaveLength(2);
+    // Now: one call per pass.
+    expect(MAX_BLOCKS_PER_CALL).toBeGreaterThanOrEqual(40);
+    expect(shardBlocks(paragraphs)).toHaveLength(1);
+  });
+
+  it('first pause on the email in hybrid mode: one fast call, one deep call, no tone call, never at the same time', async () => {
+    const provider = budgetProvider({ delayMs: 15 });
+    const h = harness({ provider, tone: true, settings: { mode: 'hybrid' } });
+    // The content script's first check of a field (attach / first pause): fast with every block dirty, then the
+    // deep pass after the idle delay. Here the deep request arrives while the fast call is still running.
+    const fast = request(EMAIL, { pass: 'fast', version: 1 });
+    const pFast = h.check(fast);
+    await settle(3);
+    const pDeep = h.check(deepAfter(fast, 1));
+    await Promise.all([pFast, pDeep]);
+    await settle();
+
+    expect(provider.calls.map((c) => [c.pass, c.model, c.blockIds.length])).toEqual([
+      ['fast', 'claude-haiku-5-5', 6],
+      ['deep', 'claude-opus-5-5', 6],
+    ]);
+    // The deep call started only after the fast call had finished: no burst of two concurrent requests.
+    expect(provider.calls[1]!.start).toBeGreaterThanOrEqual(provider.calls[0]!.end);
+    // Both calls covered the whole email, so both carried its tone: no separate tone call.
+    expect(provider.toneCalls).toBe(0);
+    expect(h.results.map((r) => [r.pass, r.error?.code ?? null])).toEqual([
+      ['fast', null],
+      ['deep', null],
+    ]);
+    expect(h.results[0]!.tone).toBeDefined();
+    expect(h.results[1]!.blocks.every((b) => b.pass === 'deep')).toBe(true);
+  });
+
+  it('a later pause after editing one paragraph: one fast call and one deep call on that paragraph, tone throttled', async () => {
+    const provider = budgetProvider({ delayMs: 2 });
+    const h = harness({ provider, tone: true });
+    const first = request(EMAIL, { pass: 'fast', version: 1 });
+    await h.check(first);
+    await h.check(deepAfter(first, 1));
+    await settle();
+    const before = provider.calls.length;
+
+    const edited = EMAIL.replace('Also, the new dashboard', 'Also, the shiny new dashboard');
+    const req = request(edited, { pass: 'fast', version: 2 });
+    const changed = req.blocks[3]!.hash;
+    await h.check({ ...req, dirtyBlockHashes: [changed] });
+    await h.check(deepAfter(req, 2, [changed]));
+    await settle();
+
+    const pause = provider.calls.slice(before);
+    expect(pause.map((c) => [c.pass, c.blockIds])).toEqual([
+      ['fast', ['b3']],
+      ['deep', ['b3']],
+    ]);
+    // The tone of the whole email was known from the first pause and the text barely changed: no tone call.
+    expect(provider.toneCalls).toBe(0);
+    const last = h.results[h.results.length - 1]!;
+    expect(last.blocks).toHaveLength(6);
+    expect(last.blocks.every((b) => b.pass === 'deep')).toBe(true);
+  });
+
+  it('a fast pass that arrives while a deep pass for the same text is running waits and is served from it', async () => {
+    const provider = budgetProvider({ delayMs: 15 });
+    const h = harness({ provider });
+    const deep = request(EMAIL, { pass: 'deep', version: 1 });
+    const pDeep = h.check(deep);
+    await settle(3);
+    const pFast = h.check({ ...deep, pass: 'fast' });
+    await Promise.all([pDeep, pFast]);
+    expect(provider.calls.map((c) => c.pass)).toEqual(['deep']);
+    const fast = h.results.find((r) => r.pass === 'fast')!;
+    expect(fast.error).toBeUndefined();
+    expect(fast.fromCache).toBe(true);
+    expect(fast.blocks.every((b) => b.pass === 'deep')).toBe(true);
+    expect(fast.suggestions.length).toBeGreaterThan(0);
+  });
+
+  it('a 429 on the deep pass keeps the fast pass suggestions in the error result', async () => {
+    const provider = budgetProvider({ delayMs: 1, script: (c) => (c.pass === 'deep' ? new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) : 'ok') });
+    const h = harness({ provider });
+    const fast = request(EMAIL, { pass: 'fast', version: 1 });
+    await h.check(fast);
+    await h.check(deepAfter(fast, 1));
+    const [fastResult, deepResult] = h.results;
+    expect(fastResult!.suggestions.length).toBeGreaterThan(0);
+    expect(deepResult!.error?.code).toBe('rate-limit');
+    expect(deepResult!.error?.retryable).toBe(true);
+    // The shared cooldown with two retries is kept: three deep attempts in total.
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(3);
+    // The error result still carries what the fast pass found (the side panel shows it, the worker keeps it).
+    expect(deepResult!.suggestions.map((s) => s.id)).toEqual(fastResult!.suggestions.map((s) => s.id));
+    expect(deepResult!.blocks.every((b) => b.pass === 'fast')).toBe(true);
+  });
+
+  it('a deep pass that stayed rate limited is run again after the next successful fast pass for the same text', async () => {
+    let deepAttempts = 0;
+    const provider = budgetProvider({
+      delayMs: 1,
+      script: (c) => {
+        if (c.pass !== 'deep') return 'ok';
+        deepAttempts++;
+        return deepAttempts <= 3 ? new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) : 'ok';
+      },
+    });
+    const h = harness({ provider });
+    const fast = request(EMAIL, { pass: 'fast', version: 1 });
+    await h.check(fast);
+    await h.check(deepAfter(fast, 1));
+    expect(h.results[1]!.error?.code).toBe('rate-limit');
+    // The content script re-sends the fast pass later (its own rate-limit retry, or the next idle): served from
+    // the cache, and the owed deep pass follows on its own.
+    await h.check({ ...fast, version: 2 });
+    await settle(60);
+    const deepResults = h.results.filter((r) => r.pass === 'deep');
+    expect(deepResults.map((r) => r.error?.code ?? null)).toEqual(['rate-limit', null]);
+    expect(deepResults[1]!.blocks.every((b) => b.pass === 'deep')).toBe(true);
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(4);
+    // Paid off: a further fast pass does not start yet another deep pass.
+    await h.check({ ...fast, version: 3 });
+    await settle(30);
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(4);
+  });
+
+  it('an owed deep pass also re-runs on its own after the cooldown, once', async () => {
+    const provider = budgetProvider({ delayMs: 1, script: (c) => (c.pass === 'deep' ? new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) : 'ok') });
+    const h = harness({ provider, owedRetryMs: 10 });
+    const fast = request(EMAIL, { pass: 'fast', version: 1 });
+    await h.check(fast);
+    await h.check(deepAfter(fast, 1));
+    await settle(250);
+    // The original deep pass and one owed re-run, each with the two cooldown retries: 6 attempts, then it stops.
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(6);
+    expect(h.results.filter((r) => r.pass === 'deep').every((r) => r.error?.code === 'rate-limit' && r.suggestions.length > 0)).toBe(true);
+    await settle(60);
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(6);
+    // cancel() drops anything still owed.
+    h.engine.cancel('f1');
+  });
+
+  it('an owed deep pass is dropped once the user has changed the text', async () => {
+    const provider = budgetProvider({ delayMs: 1, script: (c) => (c.pass === 'deep' ? new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) : 'ok') });
+    const h = harness({ provider, owedRetryMs: 30 });
+    const fast = request(EMAIL, { pass: 'fast', version: 1 });
+    await h.check(fast);
+    await h.check(deepAfter(fast, 1));
+    await h.check(request(`${EMAIL} More.`, { pass: 'fast', version: 2 }));
+    await settle(120);
+    expect(provider.calls.filter((c) => c.pass === 'deep')).toHaveLength(3);
+  });
+
+  it('edits while a call is on the wire: the sent call finishes silently, waiting requests collapse into one', async () => {
+    const provider = budgetProvider({ delayMs: 20 });
+    const h = harness({ provider });
+    const p1 = h.check(request(`${EMAIL} One.`, { pass: 'fast', version: 1 }));
+    await settle(3);
+    const p2 = h.check(request(`${EMAIL} One. Two.`, { pass: 'fast', version: 2 }));
+    await settle(1);
+    const p3 = h.check(request(`${EMAIL} One. Two. Three.`, { pass: 'fast', version: 3 }));
+    await Promise.all([p1, p2, p3]);
+    // Version 1 was already sent (not aborted: the request was paid for), version 2 never left the queue.
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[1]!.start).toBeGreaterThanOrEqual(provider.calls[0]!.end);
+    // Only the newest request reports, and it reuses the blocks version 1 cached: just the edited paragraph.
+    expect(h.results.map((r) => r.version)).toEqual([3]);
+    expect(provider.calls[1]!.blockIds).toEqual(['b5']);
+  });
+
+  it('long fields still shard; a shard that stays rate limited fails alone and the rest is delivered first', async () => {
+    const long = Array.from({ length: 3 }, (_, i) => `Paragraph ${i} has teh typo. ${Array(700).fill('word').join(' ')}`).join('\n');
+    const provider = budgetProvider({ delayMs: 1, script: (c) => (c.blockIds.includes('b0') ? new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) : 'ok') });
+    const h = harness({ provider });
+    await h.check(request(long, { pass: 'fast' }));
+    expect(h.results).toHaveLength(2);
+    const [ok, failed] = h.results;
+    expect(ok!.error).toBeUndefined();
+    expect(ok!.blocks.map((b) => b.hash)).toEqual(request(long).blocks.slice(1).map((b) => b.hash));
+    expect(failed!.error?.code).toBe('rate-limit');
+    expect(failed!.suggestions).toEqual(ok!.suggestions);
+  });
+
+  it('a pass whose every call is rate limited emits one retryable error (the content script retries it)', async () => {
+    const provider = budgetProvider({ delayMs: 1, script: () => new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, 5) });
+    const h = harness({ provider });
+    await h.check(request(EMAIL, { pass: 'fast' }));
+    expect(h.results).toHaveLength(1);
+    expect(h.results[0]!.error).toMatchObject({ code: 'rate-limit', retryable: true });
+    expect(provider.calls).toHaveLength(3);
+  });
+});
+
+describe('tone runner budget', () => {
+  it('skips the tone call for a remembered text and throttles small edits, but not big changes or old tones', async () => {
+    let clock = 1_000_000;
+    const runner = createToneRunner({ now: () => clock });
+    const provider = budgetProvider();
+    const sent: unknown[] = [];
+    const run = { provider, model: 'claude-haiku-5-5', send: (t: unknown) => sent.push(t) };
+    const req = request(EMAIL, { pass: 'deep' });
+    runner.remember(req, { labels: [{ label: 'friendly', strength: 'moderate' }], summary: 'Sounds friendly.' });
+    // Same text: cache hit, no call.
+    await runner.maybeRun(req, run);
+    expect(provider.toneCalls).toBe(0);
+    expect(sent).toHaveLength(1);
+    // A small edit within the interval: no call.
+    await runner.maybeRun(request(`${EMAIL} Cheers.`, { pass: 'deep' }), run);
+    expect(provider.toneCalls).toBe(0);
+    // A big change: a call.
+    await runner.maybeRun(request(`${EMAIL}\n${EMAIL}`, { pass: 'deep' }), run);
+    expect(provider.toneCalls).toBe(1);
+    // A small edit after the interval: a call.
+    clock += TONE_MIN_INTERVAL_MS;
+    await runner.maybeRun(request(`${EMAIL}\n${EMAIL} Bye.`, { pass: 'deep' }), run);
+    expect(provider.toneCalls).toBe(2);
   });
 });

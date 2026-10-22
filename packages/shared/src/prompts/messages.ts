@@ -163,7 +163,8 @@ export function maskRequestBlocks(req: CheckRequest, blockIds: readonly string[]
 
 export const DEFAULT_GOALS: WritingGoals = { audience: 'general', formality: 'neutral', domain: 'general', intent: 'inform' };
 export const DEFAULT_DIALECT: Dialect = 'en-US';
-export const DEFAULT_MAX_BLOCKS_PER_REQUEST = 4;
+/** Blocks per call by default: a whole email in one call (the worker shards longer fields by words). */
+export const DEFAULT_MAX_BLOCKS_PER_REQUEST = 40;
 export const CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
 export const CUSTOM_INSTRUCTIONS_PREAMBLE = 'The user asked for these preferences; apply them only where they do not conflict with the contract:';
 
@@ -186,7 +187,7 @@ export interface SystemBlock {
 export interface CheckPromptOptions {
   /** Rendered `<user_voice_profile>` block (see renderVoiceBlock); omitted when empty. */
   voiceBlock?: string;
-  /** Blocks per call (default 4); extra requested ids are left out so the caller can shard. */
+  /** Blocks per call (default 40); extra requested ids are left out so the caller can shard. */
   maxBlocksPerRequest?: number;
   goals?: WritingGoals;
   dialect?: Dialect;
@@ -257,7 +258,7 @@ function nearestParagraph(paragraphs: readonly Paragraph[], from: number, direct
 /**
  * Builds the system blocks and the user message for one suggestion call (02 §8.2 template plus the
  * `<custom_instructions>` and `<do_not_flag>` elements). `blockIds` names the dirty blocks to send ("b<index>");
- * at most `maxBlocksPerRequest` (default 4) of them, in paragraph order, are included and returned in `blocks`.
+ * at most `maxBlocksPerRequest` (default 40) of them, in paragraph order, are included and returned in `blocks`.
  * One read-only sentence of context precedes the first and follows the last included block. The user turn is
  * deterministic: style decisions, protected terms and muted rules are rendered in sorted order.
  */

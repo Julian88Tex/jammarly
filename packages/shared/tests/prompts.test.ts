@@ -50,6 +50,7 @@ import {
   titleForRule,
   DEFAULT_RULE_TITLE,
   CUSTOM_INSTRUCTIONS_PREAMBLE,
+  DEFAULT_MAX_BLOCKS_PER_REQUEST,
 } from '../src/prompts';
 
 // ---------------------------------------------------------------------------
@@ -106,12 +107,22 @@ function anchorOn(text: string, suggestions: EngineSuggestion[], opts: Partial<A
   return anchorSuggestions(output, blocks, req.blocks, text, { ...ANCHOR_OPTS, ...opts });
 }
 
-/** Pulls every `<example>` of the system prompt: the block text and the JSON the model is expected to return. */
-function promptExamples(): { text: string; attrs: string; json: EngineOutput }[] {
-  const out: { text: string; attrs: string; json: EngineOutput }[] = [];
-  const re = /<example>\n<document ([^>]*)><block id="b1">([\s\S]*?)<\/block><\/document>\n→ ([\s\S]*?)\n<\/example>/g;
+interface PromptExample {
+  attrs: string;
+  /** The example's blocks in order, as the user turn would carry them. */
+  blocks: { id: string; text: string }[];
+  /** The blocks joined by newlines: a field whose paragraph i is block "b<i>". */
+  text: string;
+  json: EngineOutput;
+}
+
+/** Pulls every `<example>` of the system prompt: its blocks and the JSON the model is expected to return. */
+function promptExamples(): PromptExample[] {
+  const out: PromptExample[] = [];
+  const re = /<example>\n<document ([^>]*)>\n([\s\S]*?)\n<\/document>\n→ ([\s\S]*?)\n<\/example>/g;
   for (const m of SUGGESTION_SYSTEM_PROMPT.matchAll(re)) {
-    out.push({ attrs: m[1] ?? '', text: m[2] ?? '', json: JSON.parse(m[3] ?? '') as EngineOutput });
+    const blocks = [...(m[2] ?? '').matchAll(/<block id="(b\d+)">([\s\S]*?)<\/block>/g)].map((b) => ({ id: b[1] ?? '', text: b[2] ?? '' }));
+    out.push({ attrs: m[1] ?? '', blocks, text: blocks.map((b) => b.text).join('\n'), json: JSON.parse(m[3] ?? '') as EngineOutput });
   }
   return out;
 }
@@ -121,35 +132,60 @@ function promptExamples(): { text: string; attrs: string; json: EngineOutput }[]
 // ---------------------------------------------------------------------------
 
 describe('SUGGESTION_SYSTEM_PROMPT', () => {
-  it('is v3 and byte-stable', () => {
-    expect(PROMPT_VERSION).toBe('v3');
+  it('is v4 and byte-stable', () => {
+    expect(PROMPT_VERSION).toBe('v4');
     expect(SUGGESTION_SYSTEM_PROMPT).toBe(SUGGESTION_SYSTEM_PROMPT.slice());
     expect(SUGGESTION_SYSTEM_PROMPT).not.toMatch(/20\d\d-\d\d-\d\d/);
-    // Long enough to clear the 512-token prompt-cache minimum by a wide margin.
-    expect(SUGGESTION_SYSTEM_PROMPT.length).toBeGreaterThan(8000);
+    // Long enough to clear the 512-token prompt-cache minimum of Haiku 5.5 and Opus 5.5 by a wide margin
+    // (~4 characters per token), so the cached prefix always qualifies.
+    expect(SUGGESTION_SYSTEM_PROMPT.length).toBeGreaterThan(16000);
+    // No em dashes anywhere: the explanations the model writes are user-facing and it imitates the prompt's style.
+    expect(SUGGESTION_SYSTEM_PROMPT).not.toContain('\u2014');
   });
 
-  it('contains every section of the research draft', () => {
-    for (const heading of ['## Contract', '## Categories and rules', '## Register and goals', '## Do not flag', '## Tiering', '## Document-level fields', '## Examples']) {
+  it('contains every section of the contract', () => {
+    for (const heading of ['## Contract', '## Rule ids by category', '## What to check in every sentence', '## Register and goals', '## Do not flag', '## Confidence and tiering', '## Document-level fields', '## Examples']) {
       expect(SUGGESTION_SYSTEM_PROMPT).toContain(heading);
     }
-    expect(SUGGESTION_SYSTEM_PROMPT).toContain('SILENCE IS THE DEFAULT');
+    expect(SUGGESTION_SYSTEM_PROMPT).toContain('BE THOROUGH');
+    expect(SUGGESTION_SYSTEM_PROMPT).toContain('MINIMAL EDITS');
+    expect(SUGGESTION_SYSTEM_PROMPT).toContain('MEANING IS SACRED');
     expect(SUGGESTION_SYSTEM_PROMPT).toContain('VERBATIM ANCHORS');
     expect(SUGGESTION_SYSTEM_PROMPT).toContain('⟦…⟧');
+    // The v3 caps that cost recall are gone.
+    expect(SUGGESTION_SYSTEM_PROMPT).not.toContain('SILENCE IS THE DEFAULT');
+    expect(SUGGESTION_SYSTEM_PROMPT).not.toMatch(/At most one clarity, engagement or delivery suggestion per sentence/);
+    expect(SUGGESTION_SYSTEM_PROMPT).not.toMatch(/at most two rewrites per block/);
   });
 
   it('lists every rule id of the contract', () => {
     for (const rule of ENGINE_RULE_IDS) expect(SUGGESTION_SYSTEM_PROMPT).toContain(rule);
   });
 
-  it('carries all four examples, each parseable as EngineOutput', () => {
+  it('carries four examples, each parseable as EngineOutput, one of them a thorough multi-block email', () => {
     const examples = promptExamples();
     expect(examples).toHaveLength(4);
     for (const ex of examples) {
       const parsed = parseEngineOutput(ex.json);
-      expect(parsed.blocks[0]?.block_id).toBe('b1');
+      expect(parsed.blocks.map((b) => b.block_id)).toEqual(ex.blocks.map((b) => b.id));
+      for (const s of ex.json.blocks.flatMap((b) => b.suggestions)) {
+        expect(s.explanation.length).toBeLessThanOrEqual(120);
+        expect(s.explanation).not.toContain('\u2014');
+      }
     }
-    expect(examples.filter((e) => (e.json.blocks[0]?.suggestions.length ?? 0) === 0)).toHaveLength(2);
+    expect(examples.filter((e) => e.json.blocks.every((b) => b.suggestions.length === 0))).toHaveLength(1);
+    const email = examples[0];
+    if (email === undefined) throw new Error('missing example');
+    expect(email.attrs).toContain('domain="email"');
+    expect(email.blocks.length).toBeGreaterThanOrEqual(4);
+    const all = email.json.blocks.flatMap((b) => b.suggestions);
+    expect(all.length).toBeGreaterThanOrEqual(15);
+    expect(new Set(all.map((s) => s.category))).toEqual(new Set(['correctness', 'clarity', 'engagement', 'delivery']));
+    // Several suggestions in one sentence, and the greeting comma.
+    expect(all.filter((s) => email.blocks[2]?.text.startsWith('I was') && ['In order to', 'budget', 'make a decision about', 'asap'].includes(s.original))).toHaveLength(4);
+    expect(all.some((s) => s.original === 'Sam' && s.replacement === 'Sam,')).toBe(true);
+    // ids are unique across the response.
+    expect(new Set(all.map((s) => s.id)).size).toBe(all.length);
   });
 
   it('has a title for every rule id', () => {
@@ -423,12 +459,14 @@ describe('buildCheckMessages', () => {
   });
 
   it('limits the blocks per request and keeps paragraph order', () => {
-    const long = Array.from({ length: 6 }, (_, i) => `Paragraph ${i} is here.`).join('\n');
+    const long = Array.from({ length: 45 }, (_, i) => `Paragraph ${i} is here.`).join('\n');
     const req = makeRequest(long);
     const all = req.blocks.map((b) => `b${b.index}`).reverse();
-    expect(buildCheckMessages(req, all).blocks.map((b) => b.blockId)).toEqual(['b0', 'b1', 'b2', 'b3']);
+    // A whole email goes in one call by default (40 blocks); the worker shards longer fields itself.
+    expect(DEFAULT_MAX_BLOCKS_PER_REQUEST).toBe(40);
+    expect(buildCheckMessages(req, all).blocks.map((b) => b.blockId)).toEqual(Array.from({ length: 40 }, (_, i) => `b${i}`));
     expect(buildCheckMessages(req, all, { maxBlocksPerRequest: 2 }).blocks.map((b) => b.blockId)).toEqual(['b0', 'b1']);
-    expect(buildCheckMessages(req, all, { maxBlocksPerRequest: 10 }).blocks).toHaveLength(6);
+    expect(buildCheckMessages(req, all, { maxBlocksPerRequest: 50 }).blocks).toHaveLength(45);
   });
 
   it('masks DOM-protected ranges inside blocks and keeps the real text', () => {
@@ -456,55 +494,75 @@ describe('buildCheckMessages', () => {
 describe('anchorSuggestions', () => {
   it('round-trips the system prompt examples to absolute ranges that apply cleanly', () => {
     const examples = promptExamples();
+    // Every span edit applied (rewrites and flags left out).
     const expectations: Record<string, string> = {
-      'He said that the the report were finished yesterday and we should probably of sent it.': 'He said that the report was finished yesterday and we should have sent it.',
-      'Due to the fact that the vendor was late, the deliverables were delayed by the team for the purposes of quality.': 'Because the vendor was late, the deliverables were delayed by the team for quality.',
+      b0email: [
+        'Hi Sam,',
+        "I wanted to give you a quick update on the Henderson project. There was a delay with the vendor, so the report won't be ready until next week. The analytics team reviewed the data on Monday, and they said it looks strong.",
+        'I was wondering if maybe we could move our meeting to Thursday? Sorry for the late notice. To finalize the budget, we need to decide on the staffing plan ASAP.',
+        'Thanks a lot,',
+        'Dana',
+      ].join('\n'),
+      b0business: 'Because the vendor was late, the team delayed the deliverables for quality. We will share a fully tested build and a high-quality report next week; it will include every metric.',
+      b0technical: 'Run ⟦CODE_1⟧ then set ⟦CODE_2⟧ to the hostname; the daemon restarts itself automatically.',
     };
-    for (const ex of examples) {
+    const keys = ['b0email', 'b0business', '', 'b0technical'];
+    examples.forEach((ex, i) => {
+      // Shift every block down by one paragraph so block ids never coincide with offsets by accident.
       const prefixText = 'Intro paragraph first.\n';
       const text = prefixText + ex.text;
       const req = makeRequest(text);
-      const blocks = maskRequestBlocks(req, ['b1']);
-      const output = parseEngineOutput(ex.json);
-      const { suggestions, dropped } = anchorSuggestions(output, blocks, req.blocks, text, ANCHOR_OPTS);
+      const ids = ex.blocks.map((_, k) => `b${k + 1}`);
+      const blocks = maskRequestBlocks(req, ids);
+      const shifted = parseEngineOutput({ ...ex.json, blocks: ex.json.blocks.map((b) => ({ ...b, block_id: `b${Number(b.block_id.slice(1)) + 1}` })) });
+      const { suggestions, dropped } = anchorSuggestions(shifted, blocks, req.blocks, text, ANCHOR_OPTS);
       expect(dropped).toEqual([]);
-      expect(suggestions).toHaveLength(ex.json.blocks[0]?.suggestions.length ?? 0);
+      expect(suggestions).toHaveLength(ex.json.blocks.reduce((n, b) => n + b.suggestions.length, 0));
       for (const s of suggestions) {
         expect(text.slice(s.range.start, s.range.end)).toBe(s.original);
         expect(s.range.start).toBeGreaterThanOrEqual(prefixText.length);
-        expect(s.blockId).toBe('b1');
+        expect(ids).toContain(s.blockId);
         expect(s.source).toBe('llm');
         expect(s.anchor).toBe('exact');
         expect(s.title).toBe(titleForRule(s.rule));
       }
-      const expected = expectations[ex.text];
+      const expected = expectations[keys[i] ?? ''];
       if (expected !== undefined) {
-        const edits = suggestions.filter((s) => s.tier !== 'C' || s.rule === 'hedging').map((s) => ({ range: s.range, original: s.original, replacement: s.replacement }));
+        const edits = suggestions.filter((s) => s.kind !== 'rewrite' && s.kind !== 'flag').map((s) => ({ range: s.range, original: s.original, replacement: s.replacement }));
         const applied = applyEdits(text, edits);
         expect(applied.skipped).toEqual([]);
         expect(applied.text).toBe(prefixText + expected);
       }
-    }
+    });
   });
 
-  it('assigns the documented tiers to the first example', () => {
+  it('assigns the documented tiers to the email example', () => {
     const ex = promptExamples()[0];
     if (ex === undefined) throw new Error('missing example');
     const req = makeRequest(ex.text);
-    const { suggestions } = anchorSuggestions(parseEngineOutput(ex.json), maskRequestBlocks(req, ['b0']).map((b) => ({ ...b, blockId: 'b1' })), req.blocks.map((b) => ({ ...b, index: 1 })), ex.text, ANCHOR_OPTS);
-    const byRule = Object.fromEntries(suggestions.map((s) => [s.rule, s]));
-    expect(byRule.repeated_word?.tier).toBe('A');
-    expect(byRule.repeated_word?.original).toBe('the ');
-    expect(byRule.repeated_word?.replacement).toBe('');
-    expect(byRule.repeated_word?.kind).toBe('delete');
-    expect(ex.text.slice(byRule.repeated_word?.range.start, byRule.repeated_word?.range.end)).toBe('the ');
-    expect(byRule.subject_verb_agreement?.tier).toBe('A');
-    expect(byRule.subject_verb_agreement?.original).toBe('were');
-    expect(byRule.confusable_word?.original).toBe('of');
-    expect(byRule.confusable_word?.replacement).toBe('have');
+    const { suggestions, dropped } = anchorSuggestions(parseEngineOutput(ex.json), maskRequestBlocks(req, ex.blocks.map((b) => b.id)), req.blocks, ex.text, ANCHOR_OPTS);
+    expect(dropped).toEqual([]);
+    const byOriginal = (o: string) => suggestions.find((s) => s.original === o || (o === 'the the' && s.rule === 'repeated_word'));
+    const repeated = byOriginal('the the');
+    expect(repeated?.tier).toBe('A');
+    expect(repeated?.original).toBe('the ');
+    expect(repeated?.replacement).toBe('');
+    expect(repeated?.kind).toBe('delete');
+    expect(byOriginal('wont')?.tier).toBe('A');
+    expect(byOriginal('Their')?.tier).toBe('A');
+    // The greeting comma is a pure insertion highlighted on the name.
+    const greeting = suggestions.find((s) => s.blockId === 'b0');
+    expect(greeting?.kind).toBe('insert');
+    expect(greeting?.replacement).toBe(',');
+    expect(ex.text.slice(greeting?.highlight.start, greeting?.highlight.end)).toBe('Sam');
+    // A compound-sentence comma at 0.8 is a Tier B correctness fix.
+    expect(suggestions.find((s) => s.rule === 'comma' && s.blockId === 'b1')?.tier).toBe('B');
     // meaning_preserving=false is never bulk-applied: Tier C per types.ts.
-    expect(byRule.hedging?.tier).toBe('C');
-    expect(byRule.hedging?.original).toBe('probably ');
+    expect(suggestions.find((s) => s.rule === 'hedging' && s.original === ', I think')?.tier).toBe('C');
+    // The rewrite is linked to the correctness edit inside it.
+    const rewrite = suggestions.find((s) => s.kind === 'rewrite');
+    const thursday = suggestions.find((s) => s.original === 'thursday');
+    expect(rewrite?.conflictsWith).toEqual([thursday?.id]);
   });
 
   it('trims "the the report" to a range over "the " only', () => {
@@ -688,7 +746,7 @@ describe('anchorSuggestions', () => {
     const moved = run('A much longer intro paragraph.\n\nTheir going to the store tomorow.', 'b1');
     expect(moved.suggestions.map((s) => s.id)).toEqual(a.suggestions.map((s) => s.id));
     expect(moved.suggestions[0]?.range.start).not.toBe(a.suggestions[0]?.range.start);
-    expect(a.suggestions[0]?.promptVersion).toBe('v3');
+    expect(a.suggestions[0]?.promptVersion).toBe(PROMPT_VERSION);
     expect(a.suggestions[0]?.model).toBe('claude-opus-5-5');
     expect(a.suggestions[0]?.learnedState).toBe('active');
     expect(a.suggestions[0]?.blockHash).toBe(hashText('Their going to the store tomorow.'));
@@ -765,7 +823,7 @@ describe('cost', () => {
   });
 
   it('fixes effort and thinking per pass', () => {
-    expect(effortFor('fast')).toBe('low');
+    expect(effortFor('fast')).toBe('medium');
     expect(effortFor('deep')).toBe('medium');
     expect(thinkingFor('claude-haiku-5-5', 'fast')).toEqual({ type: 'disabled' });
     expect(thinkingFor('claude-haiku-5-5', 'deep')).toEqual({ type: 'adaptive' });
@@ -1301,32 +1359,118 @@ describe('adversarial', () => {
     expect(applyAll(text, suggestions)).toBe("🎉🎉 They're going home, I think 😀, definitely.");
   });
 
-  it('never anchors across block boundaries or into another block', () => {
+  it('never anchors across block boundaries; a mislabeled block is re-tried only where it fits unambiguously', () => {
     const text = 'First line ends here\nand continues below with teh word.';
     const req = makeRequest(text);
     const blocks = maskRequestBlocks(req, ['b0', 'b1']);
     const output: EngineOutput = {
       blocks: [
-        { block_id: 'b0', suggestions: [sug({ id: 'cross', original: 'here\nand', replacement: 'here, and' }), sug({ id: 'wrongblock', original: 'teh', replacement: 'the' })] },
+        {
+          block_id: 'b0',
+          suggestions: [
+            sug({ id: 'cross', original: 'here\nand', replacement: 'here, and' }),
+            // Listed under the wrong block: "teh" exists only in b1 and the fix is right wherever "teh" is.
+            sug({ id: 'wrongblock', original: 'teh', replacement: 'the' }),
+            // A context-dependent edit without agreeing context is never moved to another block.
+            sug({ id: 'guess', rule: 'article', original: 'word', replacement: 'words' }),
+          ],
+        },
         { block_id: 'b1', suggestions: [sug({ id: 'ok', original: 'teh', replacement: 'the' })] },
         { block_id: 'b2', suggestions: [sug({ id: 'nob2', original: 'teh', replacement: 'the' })] },
+        // Context agreement moves a context-dependent edit from an unknown block id.
+        { block_id: 'b7', suggestions: [sug({ id: 'ctx', rule: 'article', original: 'below', replacement: 'below,', prefix: 'continues', suffix: 'with teh' })] },
       ],
       document: { tone: [], consistency: [], notes: '' },
     };
     const { suggestions, dropped } = anchorSuggestions(output, blocks, req.blocks, text, ANCHOR_OPTS);
     expect(dropped.map((d) => [d.suggestion.id, d.reason])).toEqual([
       ['cross', 'unanchored'],
-      ['wrongblock', 'unanchored'],
-      ['nob2', 'unknown_block'],
+      ['guess', 'unanchored'],
+      ['ok', 'duplicate'],
+      ['nob2', 'duplicate'],
     ]);
-    expect(suggestions.map((s) => s.id)).toHaveLength(1);
+    expect(suggestions.map((s) => s.blockId)).toEqual(['b1', 'b1']);
     const b1 = req.blocks[1];
-    expect(suggestions[0]?.range.start).toBeGreaterThanOrEqual(b1?.start ?? -1);
-    expect(suggestions[0]?.range.end).toBeLessThanOrEqual((b1?.start ?? 0) + (b1?.text.length ?? 0));
+    for (const s of suggestions) {
+      expect(s.range.start).toBeGreaterThanOrEqual(b1?.start ?? -1);
+      expect(s.range.end).toBeLessThanOrEqual((b1?.start ?? 0) + (b1?.text.length ?? 0));
+      expect(text.slice(s.range.start, s.range.end)).toBe(s.original);
+    }
     // A block whose text changed since the request (stale paragraph) is unknown, not misanchored.
     const stale = anchorSuggestions(output, blocks, req.blocks.map((p) => (p.index === 1 ? { ...p, text: p.text + ' edited' } : p)), text + ' edited', ANCHOR_OPTS);
     expect(stale.suggestions).toEqual([]);
     expect(stale.dropped.filter((d) => d.suggestion.id === 'ok').map((d) => d.reason)).toEqual(['unknown_block']);
+  });
+
+  it('normalizes model-written block ids', () => {
+    const text = 'Intro.\nThis has teh typo.';
+    const req = makeRequest(text);
+    const blocks = maskRequestBlocks(req, ['b0', 'b1']);
+    for (const id of ['B1', 'b01', ' b1 ', 'block b1']) {
+      const { suggestions, dropped } = anchorSuggestions(outputFor(id, [sug({ original: 'teh', replacement: 'the', rule: 'article' })]), blocks, req.blocks, text, ANCHOR_OPTS);
+      expect(dropped).toEqual([]);
+      expect(suggestions.map((s) => s.blockId)).toEqual(['b1']);
+    }
+  });
+
+  it('loose anchoring: collapsed whitespace, ellipses and case are repaired, but never an edit on misread text', () => {
+    // The model echoed a double space as one space; the edit lands on the real span and keeps the real spacing.
+    const spaced = 'It was a good idea.  We was hoping for more.';
+    const a = anchorOn(spaced, [sug({ rule: 'subject_verb_agreement', original: 'idea. We was', replacement: 'idea. We were' })]);
+    expect(a.dropped).toEqual([]);
+    expect(a.suggestions[0]?.original).toBe('was');
+    expect(a.suggestions[0]?.replacement).toBe('were');
+    expect(a.suggestions[0]?.anchor).toBe('normalized');
+    expect(applyAll(spaced, a.suggestions)).toBe('It was a good idea.  We were hoping for more.');
+    // "…" in the text, "..." from the model.
+    const dots = 'Wait… what happened here?';
+    const b = anchorOn(dots, [sug({ rule: 'capitalization', original: 'Wait... what', replacement: 'Wait... What' })]);
+    expect(b.suggestions[0]?.original).toBe('what');
+    expect(b.suggestions[0]?.replacement).toBe('What');
+    expect(applyAll(dots, b.suggestions)).toBe('Wait… What happened here?');
+    // Case misread only in the unchanged context: the real casing stays.
+    const lower = 'well i dont think so.';
+    const c = anchorOn(lower, [sug({ rule: 'apostrophe', original: 'I dont think', replacement: "I don't think" })]);
+    expect(c.suggestions[0]?.original).toBe('dont');
+    expect(c.suggestions[0]?.replacement).toBe("don't");
+    expect(applyAll(lower, c.suggestions)).toBe("well i don't think so.");
+    // Case misread inside the edit itself: the model fixed text that is not there, so nothing is applied.
+    const us = 'Send it to us today.';
+    const d = anchorOn(us, [sug({ rule: 'consistency_acronym', original: 'US', replacement: 'U.S.' })]);
+    expect(d.suggestions).toEqual([]);
+    expect(d.dropped.map((x) => [x.reason, x.detail])).toEqual([['unanchored', 'misread']]);
+    // A spacing edit whose boundary falls inside a collapsed run is dropped, not half-applied.
+    const e = anchorOn('Hello  world today.', [sug({ rule: 'spacing', original: 'Hello world', replacement: 'Hello, world' })]);
+    expect(e.suggestions.map((x) => x.replacement)).toEqual([',']);
+    expect(applyAll('Hello  world today.', e.suggestions)).toBe('Hello,  world today.');
+    // A rewrite over a span with a double space replaces the whole real span.
+    const rw = 'We  left early. It rained.';
+    const f = anchorOn(rw, [sug({ category: 'clarity', rule: 'rewrite_for_clarity', kind: 'rewrite', severity: 'suggestion', original: 'We left early.', replacement: 'We left before noon.', confidence: 0.7, auto_apply_safe: false })]);
+    expect(f.suggestions[0]?.original).toBe('We  left early.');
+    expect(f.suggestions[0]?.replacement).toBe('We left before noon.');
+  });
+
+  it('counts occurrences the way the model sees the block: copies inside masked text are skipped', () => {
+    const text = 'See https://teh.example.com and teh docs, then teh rest.';
+    const first = anchorOn(text, [sug({ original: 'teh', replacement: 'the', occurrence: 1 })]);
+    expect(first.dropped).toEqual([]);
+    expect(first.suggestions[0]?.range.start).toBe(text.indexOf('teh docs'));
+    const second = anchorOn(text, [sug({ original: 'teh', replacement: 'the', occurrence: 2 })]);
+    expect(second.suggestions[0]?.range.start).toBe(text.indexOf('teh rest'));
+    // Only a masked copy exists: protected, as before.
+    const masked = anchorOn('Visit https://teh.example.com now.', [sug({ original: 'teh', replacement: 'the' })]);
+    expect(masked.dropped.map((x) => x.reason)).toEqual(['protected']);
+  });
+
+  it('an out-of-range occurrence falls back to the nearest copy only for context-free fixes', () => {
+    const text = 'teh cat and teh dog';
+    const spelling = anchorOn(text, [sug({ original: 'teh', replacement: 'the', occurrence: 5 })]);
+    expect(spelling.suggestions[0]?.range).toEqual({ start: 12, end: 15 });
+    const repeated = anchorOn('the the cat and the the dog', [sug({ rule: 'repeated_word', kind: 'delete', original: 'the the', replacement: 'the', occurrence: 3 })]);
+    expect(repeated.suggestions).toHaveLength(1);
+    // A real word "corrected" to a different word is context-dependent: never guessed.
+    const guess = anchorOn('the cat saw the dog', [sug({ original: 'the', replacement: 'a', occurrence: 9 })]);
+    expect(guess.dropped.map((x) => x.reason)).toEqual(['ambiguous']);
   });
 
   it('placeholder-adjacent spans: edits next to a mask survive, anything touching it is protected', () => {

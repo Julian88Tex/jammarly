@@ -133,8 +133,8 @@ export class FieldSession {
   private readonly timers: Timers;
   private inflight: Partial<Record<RequestedPass, Inflight>> = {};
   /** Pending re-send after Anthropic rate-limited a check (the worker already retried twice). */
-  private rateLimitTimer: ReturnType<typeof setTimeout> | undefined;
-  private rateLimitRetries = 0;
+  private readonly rateLimitTimers: Partial<Record<RequestedPass, ReturnType<typeof setTimeout>>> = {};
+  private readonly rateLimitRetries: Partial<Record<RequestedPass, number>> = {};
   private readonly checked = new Map<string, CheckPass>();
   private everChecked = false;
   private deepScheduled = false;
@@ -600,12 +600,14 @@ export class FieldSession {
 
   /** Re-sends a rate-limited check once the cooldown passes, if the text is unchanged; at most 3 times in a row. */
   private scheduleRateLimitRetry(pass: RequestedPass, entry: Inflight, retryAfterMs: number | undefined): void {
-    if (this.rateLimitRetries >= 3) return;
-    this.rateLimitRetries += 1;
-    if (this.rateLimitTimer !== undefined) clearTimeout(this.rateLimitTimer);
-    const wait = Math.min(60_000, Math.max(5_000, retryAfterMs ?? 15_000) * this.rateLimitRetries);
-    this.rateLimitTimer = setTimeout(() => {
-      this.rateLimitTimer = undefined;
+    const attempt = (this.rateLimitRetries[pass] ?? 0) + 1;
+    if (attempt > 3) return;
+    this.rateLimitRetries[pass] = attempt;
+    const pending = this.rateLimitTimers[pass];
+    if (pending !== undefined) clearTimeout(pending);
+    const wait = Math.min(60_000, Math.max(5_000, retryAfterMs ?? 15_000) * attempt);
+    this.rateLimitTimers[pass] = setTimeout(() => {
+      delete this.rateLimitTimers[pass];
       if (this.disposed || this.inflight[pass] || !this.isEnabled() || hashText(this.model.text) !== entry.textHash) return;
       this.inflight[pass] = entry;
       this.deps.setOutstanding(this.outstandingKey(pass), true);
@@ -616,7 +618,7 @@ export class FieldSession {
 
   dispose(): void {
     if (this.disposed) return;
-    if (this.rateLimitTimer !== undefined) clearTimeout(this.rateLimitTimer);
+    for (const t of Object.values(this.rateLimitTimers)) if (t !== undefined) clearTimeout(t);
     this.cancelInflight();
     this.feedback.dispose();
     this.deps.send({ type: 'field-detached', fieldId: this.fieldId });
@@ -781,7 +783,7 @@ export class FieldSession {
       return;
     }
     this.lastError = undefined;
-    this.rateLimitRetries = 0;
+    if (pass) delete this.rateLimitRetries[pass];
     for (const b of result.blocks) {
       const prev = this.checked.get(b.hash);
       if (prev === undefined || PASS_RANK[b.pass] > PASS_RANK[prev]) this.checked.set(b.hash, b.pass);

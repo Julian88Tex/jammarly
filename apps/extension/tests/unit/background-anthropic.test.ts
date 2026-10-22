@@ -5,6 +5,8 @@ import {
   checkParams,
   createAnthropicProvider,
   mapAnthropicError,
+  MAX_TOKENS_DEEP,
+  MAX_TOKENS_FAST,
   parseRetryAfter,
   resultFromMessage,
   toneParams,
@@ -173,14 +175,17 @@ describe('anthropic provider: request shape', () => {
     expect(fast.system).toHaveLength(2);
     expect(fast.system?.[0]).toMatchObject({ type: 'text', text: SUGGESTION_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } });
     expect(fast.system?.[1]?.cache_control).toEqual({ type: 'ephemeral' });
-    expect(fast.max_tokens).toBe(4096);
+    expect(fast.max_tokens).toBe(MAX_TOKENS_FAST);
+    // A whole email in one call with a thorough suggestion list needs far more than the old 4,096.
+    expect(MAX_TOKENS_FAST).toBeGreaterThanOrEqual(16000);
     expect(fast.output_config?.format?.type).toBe('json_schema');
-    expect(fast.output_config?.effort).toBe('low');
+    expect(fast.output_config?.effort).toBe('medium');
     expect(fast.thinking).toEqual({ type: 'disabled' });
     expect(fast.messages).toEqual([{ role: 'user', content: messages.user }]);
 
     const deep = checkParams(messages, 'claude-opus-5-5', 'deep');
-    expect(deep.max_tokens).toBe(16000);
+    expect(deep.max_tokens).toBe(MAX_TOKENS_DEEP);
+    expect(MAX_TOKENS_DEEP).toBeGreaterThanOrEqual(32000);
     expect(deep.output_config?.effort).toBe('medium');
     expect(deep.thinking).toEqual({ type: 'adaptive' });
     // Haiku on a deep pass still thinks adaptively (effort medium).

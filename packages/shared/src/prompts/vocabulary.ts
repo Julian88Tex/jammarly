@@ -45,7 +45,7 @@ export function categoryForRule(rule: string): SuggestionCategory | undefined {
  * with kind "rewrite" they are exempt from the one-sentence anchoring constraint.
  */
 export const SENTENCE_SPANNING_RULES: readonly string[] = [
-  'run_on', 'comma_splice', 'monotonous_sentences', 'rewrite_for_clarity',
+  'run_on', 'comma_splice', 'sentence_fragment', 'monotonous_sentences', 'rewrite_for_clarity',
   'tone_rewrite_positive', 'tone_rewrite_confident', 'tone_rewrite_personable',
 ];
 
