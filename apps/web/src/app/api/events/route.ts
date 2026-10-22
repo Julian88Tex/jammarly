@@ -10,9 +10,12 @@ import { bumpDeviceQuota, loadProfile } from '@/lib/store';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const SNIPPET_FIELDS = ['original', 'replacement', 'final', 'sentence'] as const;
+
 function stripSnippets(e: FeedbackEvent): FeedbackEvent {
-  const { original: _o, replacement: _r, final: _f, sentence: _s, ...rest } = e;
-  return rest;
+  const copy: FeedbackEvent = { ...e };
+  for (const field of SNIPPET_FIELDS) delete copy[field];
+  return copy;
 }
 
 /**

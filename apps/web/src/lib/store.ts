@@ -285,8 +285,9 @@ export async function loadProfileConditional(ifNoneMatch: string | null, nowMs: 
     const res = await blob().getJson<unknown>(PATHS.profile, { ifNoneMatch });
     if (res === null) return createInitialProfile(nowMs);
     if (isNotModified(res)) {
-      const v = cachedVersion(nowMs);
-      return { notModified: true, etag: ifNoneMatch, version: v?.version ?? -1 };
+      // Cold cache: version.json is one cheap read and refreshes the cache.
+      const v = cachedVersion(nowMs) ?? (await getProfileVersion(nowMs));
+      return { notModified: true, etag: ifNoneMatch, version: v.version };
     }
     const profile = migrateProfile(res.value);
     rememberVersion(profile.version, res.etag, nowMs);

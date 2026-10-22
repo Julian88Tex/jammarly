@@ -5,6 +5,7 @@
 import { adapterFactories, createAdapter } from './adapters';
 import { startContentScript } from './controller';
 import { classify, fieldLabel, findEditable } from './detect';
+import { announceGdocsStatus, isGdocsDocumentPage, registerGdocsAdapter, waitForGdocsActivation } from './gdocs/adapter';
 import { resolveProfile } from './sites';
 import { createOverlay } from './ui';
 
@@ -32,4 +33,14 @@ import { createOverlay } from './ui';
     createOverlay,
     gdocsAdapter: () => adapterFactories.gdocs,
   });
+  // Google Docs (ARCHITECTURE §3.8): once the MAIN-world bridge reports its verdict, register the inline adapter when
+  // the annotated-text API is active and announce the status to the registry, which then attaches the adapter; when
+  // inactive the registry shows the "not supported inline" state and the side panel's paste flow stays the path.
+  // Nothing runs on other hosts.
+  if (isGdocsDocumentPage()) {
+    void waitForGdocsActivation().then((status) => {
+      if (status.active) registerGdocsAdapter(adapterFactories);
+      announceGdocsStatus(status);
+    });
+  }
 })();

@@ -15,9 +15,13 @@
  * - Selection: Docs reports it only through the API, so `getSelection()` returns the last known value and refreshes
  *   it in the background; `setSelection` is fire-and-forget. Docs handles IME internally: `isComposing()` is false.
  *
- * Registration: `adapters/index.ts` is owned elsewhere, so the content-script entry calls
- * `registerGdocsAdapter(adapterFactories)` on a Docs document page once `waitForGdocsActivation()` reports
- * `active` (and `config.gdocsInline === 'auto'`); otherwise layer 1 (side panel) applies.
+ * Registration: `adapters/index.ts` is owned elsewhere, so on a Docs document page the content-script entry awaits
+ * `waitForGdocsActivation()`, calls `registerGdocsAdapter(adapterFactories)` when the bridge is active and then
+ * `announceGdocsStatus(status)`. The registry decides on a 'jammarly:gdocs-status' CustomEvent whose detail is an
+ * object (`detail.active`); the bridge's own event carries a JSON string, the only detail that crosses worlds, so the
+ * decoded verdict is re-dispatched here in the isolated world. With a factory and an active bridge (and
+ * `config.gdocsInline !== 'off'`) the registry attaches this adapter; otherwise it shows the "not supported inline"
+ * sentinel and layer 1 (the side panel's paste flow) applies.
  */
 import type { BatchEditOutcome, Edit, EditOutcome, FieldKind, TextRange } from '@jammarly/shared/types';
 import type { FieldAdapter, SiteProfile } from '../field-adapter';
@@ -478,10 +482,41 @@ export type GdocsAdapterFactory = (el: HTMLElement, profile: SiteProfile) => Fie
 /**
  * Register the Docs adapter in the adapter registry (`adapterFactories` from adapters/index.ts, which is owned by
  * another module and therefore not imported here). Call from the content-script entry on a Docs document page once
- * the bridge is active.
+ * the bridge is active, then `announceGdocsStatus` so the registry picks the factory up.
  */
 export function registerGdocsAdapter(factories: Partial<Record<FieldKind, GdocsAdapterFactory>>, opts: GoogleDocsAdapterOptions = {}): void {
   factories.gdocs = (el) => new GoogleDocsAdapter(el, opts);
+}
+
+/** Runs `fn` later; the default is one macrotask. */
+export type Defer = (fn: () => void) => void;
+
+const nextMacrotask: Defer = (fn) => {
+  setTimeout(fn, 0);
+};
+
+/**
+ * Tell the field registry the bridge's final verdict. The registry (controller/registry.ts) listens for
+ * 'jammarly:gdocs-status' on the document and reads `detail.active` from an object; the bridge's own event carries a
+ * JSON string because an object detail never crosses from the MAIN world (protocol.ts). The decoded status is
+ * therefore re-dispatched here as a plain object, one macrotask later so a registry whose boot was postponed by an
+ * instance takeover (registry.start) is already listening. `decodeStatus` accepts the object form, so other
+ * isolated-world listeners read the same verdict.
+ */
+export function announceGdocsStatus(status: GdocsStatus, target: EventTarget = document, defer: Defer = nextMacrotask): void {
+  const detail: GdocsStatus = {
+    state: status.state,
+    active: status.state === 'active' && status.active,
+    announcedId: status.announcedId,
+    ...(status.error ? { error: status.error } : {}),
+  };
+  defer(() => {
+    try {
+      target.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail }));
+    } catch {
+      // the registry then never hears about Docs on this page; nothing else to do
+    }
+  });
 }
 
 /** Build the adapter for the page's editor container, or null when the Docs editor DOM is absent. */

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Edit, FieldKind } from '@jammarly/shared/types';
 import type { FieldAdapter } from '../../src/content/field-adapter';
-import { GoogleDocsAdapter, createGdocsAdapter, findGdocsEditorElement, gdocsStatus, isGdocsDocumentPage, registerGdocsAdapter, waitForGdocsActivation, type GdocsAdapterFactory } from '../../src/content/gdocs/adapter';
+import { GoogleDocsAdapter, announceGdocsStatus, createGdocsAdapter, findGdocsEditorElement, gdocsStatus, isGdocsDocumentPage, registerGdocsAdapter, waitForGdocsActivation, type GdocsAdapterFactory } from '../../src/content/gdocs/adapter';
 import { charCountMeasure } from '../../src/content/gdocs/geometry';
-import { STATUS_EVENT, TEXT_EVENT, dispatchDetail, encodeSnapshot, encodeStatus, type GdocsApplyResult, type GdocsRpc, type GdocsStatus, type RpcMethod, type RpcParams, type RpcResult } from '../../src/content/gdocs/protocol';
+import { STATUS_EVENT, TEXT_EVENT, decodeStatus, dispatchDetail, encodeSnapshot, encodeStatus, type GdocsApplyResult, type GdocsRpc, type GdocsStatus, type RpcMethod, type RpcParams, type RpcResult } from '../../src/content/gdocs/protocol';
 import { DOCS_SENTINEL, NBSP, normalizeDocsText } from '../../src/content/gdocs/text';
 import { generic } from '../../src/content/sites/generic';
 
@@ -508,5 +508,56 @@ describe('registration and page helpers', () => {
     const s = await p;
     expect(s.state).toBe('inactive');
     expect(s.error).toMatch(/timed out/);
+  });
+});
+
+describe('announceGdocsStatus (registry relay)', () => {
+  /** What controller/registry.ts does with the event: read `detail.active` from an object detail. */
+  function registryListener(target: EventTarget): { seen: (boolean | null)[]; details: unknown[]; stop(): void } {
+    const seen: (boolean | null)[] = [];
+    const details: unknown[] = [];
+    const onStatus = (ev: Event): void => {
+      const detail = (ev as CustomEvent<{ active?: boolean }>).detail;
+      details.push(detail);
+      seen.push(detail && typeof detail === 'object' ? detail.active === true : null);
+    };
+    target.addEventListener(STATUS_EVENT, onStatus, true);
+    return { seen, details, stop: () => target.removeEventListener(STATUS_EVENT, onStatus, true) };
+  }
+
+  it('the bridge\'s own string-detail event is unreadable for the registry, the relayed object detail is not', () => {
+    const reg = registryListener(document);
+    dispatchDetail(document, STATUS_EVENT, encodeStatus({ state: 'active', active: true, announcedId: 'abc' }));
+    expect(reg.seen).toEqual([null]);
+    announceGdocsStatus({ state: 'active', active: true, announcedId: 'abc' }, document, (fn) => fn());
+    expect(reg.seen).toEqual([null, true]);
+    expect(reg.details[1]).toEqual({ state: 'active', active: true, announcedId: 'abc' });
+    expect(decodeStatus(reg.details[1])).toEqual({ state: 'active', active: true, announcedId: 'abc' });
+    reg.stop();
+  });
+
+  it('relays inactive verdicts with their error and never claims active for a non-active state', () => {
+    const reg = registryListener(document);
+    announceGdocsStatus({ state: 'inactive', active: false, announcedId: 'abc', error: 'no api' }, document, (fn) => fn());
+    announceGdocsStatus({ state: 'pending', active: true, announcedId: 'abc' }, document, (fn) => fn());
+    expect(reg.seen).toEqual([false, false]);
+    expect(reg.details[0]).toEqual({ state: 'inactive', active: false, announcedId: 'abc', error: 'no api' });
+    expect(reg.details[1]).toEqual({ state: 'pending', active: false, announcedId: 'abc' });
+    reg.stop();
+  });
+
+  it('defers one macrotask by default so a registry booting a tick later still hears it', async () => {
+    vi.useFakeTimers();
+    const reg = registryListener(document);
+    announceGdocsStatus({ state: 'active', active: true, announcedId: 'abc' }, document);
+    expect(reg.seen).toEqual([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reg.seen).toEqual([true]);
+    reg.stop();
+  });
+
+  it('swallows a dispatch failure', () => {
+    const target = { dispatchEvent: () => { throw new Error('no'); }, addEventListener: () => undefined, removeEventListener: () => undefined } as unknown as EventTarget;
+    expect(() => announceGdocsStatus({ state: 'active', active: true, announcedId: 'abc' }, target, (fn) => fn())).not.toThrow();
   });
 });

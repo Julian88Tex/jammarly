@@ -170,3 +170,15 @@ describe('GET /api/profile/version', () => {
     expect(store.ops.reads - readsBefore).toBe(1); // devices.json only
   });
 });
+
+describe('GET /api/profile cold-cache 304', () => {
+  it('reports the real version on a 304 answered by Blob after the cache expired', async () => {
+    const first = await GET_PROFILE(req('/api/profile', { headers: deviceHeaders(device.token) }), params({}));
+    const etag = first.headers.get('ETag') ?? '';
+    const { resetStoreCachesForTests } = await import('@/lib/store');
+    resetStoreCachesForTests();
+    const res = await GET_PROFILE(req('/api/profile', { headers: deviceHeaders(device.token, { 'if-none-match': etag }) }), params({}));
+    expect(res.status).toBe(304);
+    expect(res.headers.get('X-Profile-Version')).toBe('0');
+  });
+});

@@ -1,11 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/cron/synthesize", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/synthesize?ctx=messages", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/synthesize?ctx=documents", "schedule": "0 4 * * *" }
   ],
   "functions": {
     "src/app/api/cron/**": { "maxDuration": 300 },
-    "src/app/api/learning/**": { "maxDuration": 300 },
+    "src/app/api/learning/run/**": { "maxDuration": 300 },
     "src/app/api/**": { "maxDuration": 60 }
   }
 }
