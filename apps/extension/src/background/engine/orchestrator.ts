@@ -48,7 +48,7 @@ import type { LearnedStateView } from '../learning/fold';
 import { modelsFor } from '../config';
 import type { BlockCacheEntry, InflightRecord, UsageLedger } from '../storage';
 import { budgetState, wouldExceedBudget } from '../usage';
-import { isAbortError, Semaphore, stableJson } from '../util';
+import { isAbortError, Semaphore, sleep, stableJson } from '../util';
 import type { BlockCache } from './cache';
 import type { Provider } from './provider';
 import { addUsage, checkError, isProviderError, ProviderError, toCheckError, ZERO_USAGE } from './provider';
@@ -57,6 +57,11 @@ import { toneSummaryFor, type ToneRunner } from './tone';
 export const MAX_BLOCKS_PER_CALL = 4;
 export const MAX_WORDS_PER_CALL = 1200;
 export const MAX_CONCURRENT_CALLS = 3;
+/** Rate limits: every call waits out a shared cooldown, and a throttled call is retried this many times. */
+export const RATE_LIMIT_RETRIES = 2;
+export const RATE_LIMIT_MIN_WAIT_MS = 2_000;
+export const RATE_LIMIT_MAX_WAIT_MS = 30_000;
+const RATE_LIMIT_BACKOFF_MS = [5_000, 15_000];
 /** Planning figures for the budget pre-check (research 02 reviewer A5). */
 export const EST_TOKENS_PER_WORD = 1.8;
 export const EST_OUTPUT_TOKENS = 400;
@@ -90,6 +95,8 @@ export interface EngineDeps {
   tone?: ToneRunner;
   now?: () => number;
   maxConcurrent?: number;
+  /** Rate-limit handling (tests shrink the waits). */
+  rateLimit?: { retries?: number; minWaitMs?: number; maxWaitMs?: number; backoffMs?: number[] };
 }
 
 export interface Engine {
@@ -266,6 +273,24 @@ function mergeOutcomes(a: ShardOutcome, b: ShardOutcome): ShardOutcome {
 export function createEngine(deps: EngineDeps): Engine {
   const now = deps.now ?? Date.now;
   const sem = new Semaphore(deps.maxConcurrent ?? MAX_CONCURRENT_CALLS);
+  /** Set by a 429; every call (any field, any pass) waits until then so a burst does not keep hitting the limit. */
+  let cooldownUntil = 0;
+  const waitForCooldown = async (signal: AbortSignal): Promise<void> => {
+    const wait = cooldownUntil - now();
+    if (wait > 0) await sleep(wait, signal);
+  };
+  const rl = {
+    retries: deps.rateLimit?.retries ?? RATE_LIMIT_RETRIES,
+    minWaitMs: deps.rateLimit?.minWaitMs ?? RATE_LIMIT_MIN_WAIT_MS,
+    maxWaitMs: deps.rateLimit?.maxWaitMs ?? RATE_LIMIT_MAX_WAIT_MS,
+    backoffMs: deps.rateLimit?.backoffMs ?? RATE_LIMIT_BACKOFF_MS,
+  };
+  const noteRateLimit = (e: ProviderError, attempt: number): number => {
+    const suggested = e.retryAfterMs ?? rl.backoffMs[Math.min(attempt, rl.backoffMs.length - 1)] ?? rl.maxWaitMs;
+    const wait = Math.min(rl.maxWaitMs, Math.max(rl.minWaitMs, suggested));
+    cooldownUntil = Math.max(cooldownUntil, now() + wait);
+    return wait;
+  };
   const inflight = new Map<string, { controller: AbortController; version: number }>();
   const byField = new Map<string, Set<AbortController>>();
 
@@ -419,6 +444,7 @@ export function createEngine(deps: EngineDeps): Engine {
           customInstructions: profile.settings.customInstructions.value,
           mutedRules: config.mutedRules,
         });
+        await waitForCooldown(signal);
         const release = await sem.acquire(signal);
         deps.keepalive?.begin();
         try {
@@ -469,10 +495,15 @@ export function createEngine(deps: EngineDeps): Engine {
         }
       };
 
-      const callShard = async (paras: Paragraph[], allowSplit: boolean): Promise<ShardOutcome> => {
+      const callShard = async (paras: Paragraph[], allowSplit: boolean, attempt = 0): Promise<ShardOutcome> => {
         try {
           return await callOnce(paras);
         } catch (e) {
+          if (isProviderError(e) && e.code === 'rate-limit') {
+            noteRateLimit(e, attempt);
+            if (attempt < rl.retries && !signal.aborted) return callShard(paras, allowSplit, attempt + 1);
+            throw new ProviderError('rate-limit', e.message, true, Math.max(0, cooldownUntil - now()));
+          }
           if (isProviderError(e) && (e.code === 'truncated' || e.code === 'refusal')) {
             if (e.code === 'truncated' && allowSplit && paras.length > 1) {
               const mid = Math.ceil(paras.length / 2);

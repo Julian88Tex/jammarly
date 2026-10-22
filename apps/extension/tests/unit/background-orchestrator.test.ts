@@ -88,6 +88,7 @@ function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>
     ...(opts.tone ? { tone: createToneRunner() } : {}),
     ...(opts.keepalive ? { keepalive: opts.keepalive } : {}),
     ...(opts.maxConcurrent !== undefined ? { maxConcurrent: opts.maxConcurrent } : {}),
+    rateLimit: { minWaitMs: 1, maxWaitMs: 20, backoffMs: [5, 10] },
   });
   const configFor = (host: string): EffectiveConfig =>
     computeEffectiveConfig({ host, settings, profile, learned, sessionOff: { hosts: [], fields: [] }, runtimeId: 'id', usage: ledger });
@@ -363,12 +364,34 @@ describe('orchestrator with the mock provider', () => {
   });
 
   it('maps a provider failure to the result error and does not cache it', async () => {
-    const provider = scriptedProvider(() => new ProviderError('rate-limit', 'slow down', true, 1500));
+    const provider = scriptedProvider(() => new ProviderError('auth', 'bad key', false));
     const h = harness({ provider });
     await h.check(request(TEXT));
-    expect(h.results[0]!.error).toEqual({ code: 'rate-limit', message: 'slow down', retryable: true, retryAfterMs: 1500 });
+    expect(h.results[0]!.error).toEqual({ code: 'auth', message: 'bad key', retryable: false });
     await h.check(request(TEXT, { version: 2 }));
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it('retries a rate-limited call after a cooldown and returns its suggestions', async () => {
+    const provider = scriptedProvider((n) => (n === 1 ? new ProviderError('rate-limit', 'slow down', true, 15) : 'ok'));
+    const h = harness({ provider });
+    await h.check(request(TEXT));
+    expect(provider.calls).toHaveLength(2);
+    expect(h.results[0]!.error).toBeUndefined();
+    expect(h.results[0]!.suggestions.length).toBeGreaterThan(0);
+  });
+
+  it('gives up after the retries with a retryable rate-limit error and does not cache it', async () => {
+    const provider = scriptedProvider(() => new ProviderError('rate-limit', 'slow down', true, 15));
+    const h = harness({ provider });
+    await h.check(request(TEXT));
+    const err = h.results[0]!.error!;
+    expect(err.code).toBe('rate-limit');
+    expect(err.retryable).toBe(true);
+    expect(typeof err.retryAfterMs).toBe('number');
+    expect(provider.calls).toHaveLength(3);
+    await h.check(request(TEXT, { version: 2 }));
+    expect(provider.calls).toHaveLength(6);
   });
 
   it('answers a rules pass from the local rules engine', async () => {

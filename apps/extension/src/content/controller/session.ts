@@ -132,6 +132,9 @@ export class FieldSession {
   private readonly deps: SessionDeps;
   private readonly timers: Timers;
   private inflight: Partial<Record<RequestedPass, Inflight>> = {};
+  /** Pending re-send after Anthropic rate-limited a check (the worker already retried twice). */
+  private rateLimitTimer: ReturnType<typeof setTimeout> | undefined;
+  private rateLimitRetries = 0;
   private readonly checked = new Map<string, CheckPass>();
   private everChecked = false;
   private deepScheduled = false;
@@ -595,8 +598,25 @@ export class FieldSession {
     this.feedback.flush();
   }
 
+  /** Re-sends a rate-limited check once the cooldown passes, if the text is unchanged; at most 3 times in a row. */
+  private scheduleRateLimitRetry(pass: RequestedPass, entry: Inflight, retryAfterMs: number | undefined): void {
+    if (this.rateLimitRetries >= 3) return;
+    this.rateLimitRetries += 1;
+    if (this.rateLimitTimer !== undefined) clearTimeout(this.rateLimitTimer);
+    const wait = Math.min(60_000, Math.max(5_000, retryAfterMs ?? 15_000) * this.rateLimitRetries);
+    this.rateLimitTimer = setTimeout(() => {
+      this.rateLimitTimer = undefined;
+      if (this.disposed || this.inflight[pass] || !this.isEnabled() || hashText(this.model.text) !== entry.textHash) return;
+      this.inflight[pass] = entry;
+      this.deps.setOutstanding(this.outstandingKey(pass), true);
+      this.deps.send({ type: 'check', request: entry.request });
+      this.refresh();
+    }, wait);
+  }
+
   dispose(): void {
     if (this.disposed) return;
+    if (this.rateLimitTimer !== undefined) clearTimeout(this.rateLimitTimer);
     this.cancelInflight();
     this.feedback.dispose();
     this.deps.send({ type: 'field-detached', fieldId: this.fieldId });
@@ -755,11 +775,13 @@ export class FieldSession {
         this.refresh();
         return;
       }
+      if (result.error.code === 'rate-limit' && result.error.retryable && isCurrent && pass && entry) this.scheduleRateLimitRetry(pass, entry, result.error.retryAfterMs);
       this.lastError = result.error;
       this.refresh();
       return;
     }
     this.lastError = undefined;
+    this.rateLimitRetries = 0;
     for (const b of result.blocks) {
       const prev = this.checked.get(b.hash);
       if (prev === undefined || PASS_RANK[b.pass] > PASS_RANK[prev]) this.checked.set(b.hash, b.pass);
