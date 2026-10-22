@@ -1,17 +1,15 @@
 /**
- * Jammarly service worker (MV3). Placeholder entry: the engine, settings store and message router land
- * in the implementation phase. Kept minimal so the extension loads and the e2e harness can talk to it.
+ * Jammarly service worker (MV3) entry. Everything is wired synchronously here (see ./worker.ts):
+ * storage -> clock -> config -> ports -> engine -> sync -> learning -> runtime handlers -> commands.
+ * The runtime `ping` answered with { ok: true, type: 'ok' } is part of the e2e smoke contract.
  */
-import type { RuntimeRequest, RuntimeResponse } from '@jammarly/shared/types';
+import { createWorker } from './worker';
 
-chrome.runtime.onInstalled.addListener(() => {
-  console.debug('[jammarly] service worker installed');
+const worker = createWorker({ chrome: typeof chrome !== 'undefined' ? chrome : undefined });
+
+worker.ready.catch((err) => {
+  console.debug('[jammarly] worker startup failed', err);
 });
 
-chrome.runtime.onMessage.addListener((message: RuntimeRequest, _sender, sendResponse) => {
-  if (message.type === 'ping') {
-    sendResponse({ ok: true, type: 'ok' } satisfies RuntimeResponse);
-    return false;
-  }
-  return false;
-});
+// Exposed for debugging from the service-worker console (chrome://extensions -> service worker).
+(globalThis as { __jammarly?: unknown }).__jammarly = worker;

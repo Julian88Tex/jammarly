@@ -62,8 +62,22 @@ export const ABBREVIATIONS = new Set([
   'ala', 'ariz', 'ark', 'calif', 'colo', 'conn', 'del', 'fla', 'ga', 'kan', 'ky', 'mass', 'md', 'mich', 'minn', 'mo',
   'mont', 'neb', 'nev', 'okla', 'pa', 'penn', 'tenn', 'tex', 'va', 'vt', 'wis', 'wyo', 'ont', 'que', 'sask', 'nfld',
 ]);
-/** Roman numerals used as list markers ("i. first", "IV. results"); only honoured at a line start. */
-const ROMAN_MARKER_RE = /^(?:i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx)$/i;
+/** Roman numerals used as list markers ("i. first", "IV. results"); as a period marker only honoured at a line start. */
+export const ROMAN_NUMERAL_RE = /^(?:i{1,3}|iv|v|vi{1,3}|ix|x|xi{1,3}|xiv|xv|xvi{1,3}|xix|xx)$/i;
+const ROMAN_MARKER_RE = ROMAN_NUMERAL_RE;
+/**
+ * Nouns after which a lone letter or roman numeral is a label, not a word: "vitamin a", "plan a", "part i",
+ * "phase ii", "exhibit b". Shared by the article check and the lone-"i" check.
+ */
+export const LABEL_NOUNS = new Set([
+  'vitamin', 'type', 'grade', 'plan', 'exhibit', 'section', 'appendix', 'option', 'point', 'part', 'class', 'schedule',
+  'hepatitis', 'group', 'team', 'side', 'route', 'level', 'tier', 'series', 'model', 'category', 'phase', 'stage',
+  'version', 'block', 'figure', 'table', 'chapter', 'item', 'letter', 'note', 'column', 'row', 'step', 'track',
+  'variant', 'scenario', 'bucket', 'cohort', 'slot', 'wing', 'hall', 'gate', 'terminal', 'pier', 'dock', 'zone', 'list',
+  'act', 'book', 'volume', 'vol', 'article', 'scene', 'episode', 'season', 'world', 'mark', 'annex', 'clause',
+  'paragraph', 'para', 'subsection', 'title', 'unit', 'lesson', 'module', 'round', 'quarter', 'semester', 'division',
+  'generation', 'gen', 'form', 'formula', 'rank', 'league', 'squad', 'platoon', 'battalion', 'fleet', 'sector',
+]);
 /** Abbreviations that only count when a number follows ("No. 5", "Fig. 2", "p. 12"). */
 export const NUMERIC_ABBREVIATIONS = new Set(['no', 'nos', 'vol', 'vols', 'pp', 'p', 'ch', 'fig', 'figs', 'sec', 'art', 'para', 'ver', 'ed', 'eds']);
 

@@ -14,6 +14,7 @@ import type {
   SyncState,
   ToneAnalysis,
   UsageTotals,
+  WritingGoals,
   WritingScore,
 } from '@jammarly/shared/types';
 import { CATEGORIES } from '@jammarly/shared/types';
@@ -42,6 +43,9 @@ export interface AppliedItem {
   original: string;
   replacement: string;
   at: string;
+  /** Field transactions only: reverted individually or by a native undo. */
+  reverted?: boolean;
+  transactionId?: string;
 }
 
 export interface ScratchSnapshot {
@@ -80,8 +84,14 @@ export interface MenuState {
   suggestionId: string;
 }
 
+export interface GoalsDialogState {
+  kind: 'goals';
+  goals: WritingGoals;
+  scope: 'host' | 'global';
+}
+
 export interface PanelUiState {
-  dialog: 'goals' | null;
+  dialog: GoalsDialogState | null;
   preview: PreviewState | null;
   menu: MenuState | null;
   confirmDismissAll: SuggestionCategory | null;
@@ -260,8 +270,9 @@ export function replaceFields(state: PanelState, fields: FieldState[]): PanelSta
   const map: Record<string, FieldState> = {};
   const order: string[] = [];
   for (const f of fields) {
+    // A duplicated id (worker bug, two frames racing) keeps the first entry's position and the last entry's data.
+    if (!map[f.fieldId]) order.push(f.fieldId);
     map[f.fieldId] = f;
-    order.push(f.fieldId);
   }
   const progress: Record<string, Progress> = {};
   for (const [id, p] of Object.entries(state.progress)) if (map[id]) progress[id] = p;

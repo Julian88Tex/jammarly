@@ -8,7 +8,7 @@
  */
 import type { Dialect } from '../types';
 import type { RuleContext } from './context';
-import { isUpper, matchCase } from './context';
+import { isDigit, isLetter, isUpper, isWordChar, matchCase } from './context';
 
 export interface SpellingVariant {
   us: string;
@@ -203,6 +203,34 @@ export function expectsUkSpelling(dialect: Dialect): boolean {
 
 const WORD_RE = /\p{L}+/gu;
 const ALL_CAPS_RE = /^\p{Lu}{2,}$/u;
+/** Lower-case words that link the parts of a name: "Centre for Policy Studies", "Theatre of Dreams". */
+const NAME_LINKERS = new Set(['for', 'of', 'the', 'and', 'at', 'on', 'in', 'de', 'du', 'des', 'von', 'van', 'der', 'del', 'da', 'di', 'la', 'le', 'y', 'e']);
+
+/**
+ * A capitalized word at a sentence start is a name when the next word is capitalized too ("Harbor Freight is…"),
+ * also across a possessive ("Grey's Anatomy is…") or a linking word ("Centre for Policy Studies is…").
+ */
+function looksLikeName(work: string, end: number): boolean {
+  let k = end;
+  if ((work.charAt(k) === "'" || work.charAt(k) === '\u2019') && work.charAt(k + 1).toLowerCase() === 's') k += 2;
+  if (work.charAt(k) !== ' ' && work.charAt(k) !== '\u00a0') return false;
+  k++;
+  if (isUpper(work.charAt(k))) return true;
+  let j = k;
+  while (j < work.length && isLetter(work.charAt(j))) j++;
+  return NAME_LINKERS.has(work.slice(k, j)) && work.charAt(j) === ' ' && isUpper(work.charAt(j + 1));
+}
+
+/** "math.floor", "colour_value", "colour2", "color()", "color/colour": an identifier or a deliberate contrast, not prose. */
+function inIdentifier(work: string, start: number, end: number): boolean {
+  const before = start > 0 ? work.charAt(start - 1) : '';
+  const after = work.charAt(end);
+  if (before === '_' || after === '_' || isDigit(before) || isDigit(after)) return true;
+  if (before === '.' && isWordChar(work.charAt(start - 2))) return true;
+  if (after === '.' && isWordChar(work.charAt(end + 1))) return true;
+  if (after === '(' || after === '=' || after === '/' || after === '\\') return true;
+  return before === '/' || before === '\\' || before === '$' || before === '#' || before === '@';
+}
 
 export function spellingVariantRule(ctx: RuleContext): void {
   const { work, opts } = ctx;
@@ -225,14 +253,14 @@ export function spellingVariantRule(ctx: RuleContext): void {
     if (ctx.protectedTerms.has(lower)) continue;
     if (ALL_CAPS_RE.test(word)) continue; // acronyms, headings
     const start = m.index;
+    const end = start + word.length;
     if (isUpper(word.charAt(0))) {
       if (!ctx.isSentenceStart(start, true)) continue; // proper noun ("the Labour Party", "Pearl Centre")
-      // At a sentence start, a capitalized word followed by another capitalized word is a name ("Harbor Freight is…").
-      const after = start + word.length;
-      if ((work.charAt(after) === ' ' || work.charAt(after) === '\u00a0') && isUpper(work.charAt(after + 1))) continue;
+      if (looksLikeName(work, end)) continue; // "Harbor Freight is…", "Grey's Anatomy is…", "Centre for Policy Studies is…"
     }
-    if (work.charAt(start + word.length) === '-' || (start > 0 && work.charAt(start - 1) === '-')) continue; // compounds, names
-    occurrences.push({ start, end: start + word.length, word, entry, flagged: false });
+    if (work.charAt(end) === '-' || (start > 0 && work.charAt(start - 1) === '-')) continue; // compounds, names
+    if (inIdentifier(work, start, end)) continue;
+    occurrences.push({ start, end, word, entry, flagged: false });
   }
   if (occurrences.length === 0) return;
 

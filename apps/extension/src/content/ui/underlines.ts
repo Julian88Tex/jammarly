@@ -157,10 +157,15 @@ export class UnderlineLayer {
 
   /** Topmost suggestion whose fragment contains the point (viewport coordinates), or null. */
   hitTest(x: number, y: number): string | null {
+    return this.hitTestFragment(x, y)?.suggestionId ?? null;
+  }
+
+  /** Like hitTest, but also returns the fragment rect (the card anchors to the hovered line). */
+  hitTestFragment(x: number, y: number): { suggestionId: string; rect: RectLike } | null {
     for (let i = this.fragments.length - 1; i >= 0; i--) {
       const f = this.fragments[i];
-      if (!f || !f.visible) continue;
-      if (pointInRect(x, y, f.rect)) return f.suggestionId;
+      if (!f || !f.visible || f.suggestionId === '') continue;
+      if (pointInRect(x, y, f.rect)) return { suggestionId: f.suggestionId, rect: f.rect };
     }
     return null;
   }

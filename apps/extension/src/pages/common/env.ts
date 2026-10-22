@@ -34,6 +34,9 @@ export function extensionVersion(): string {
   }
 }
 
+/** How long the worker gets to answer 'open-options' before the page opens the options tab itself. */
+export const OPEN_OPTIONS_TIMEOUT_MS = 2000;
+
 /** Opens the options page; falls back to a tab with the page URL when the API is missing (tests, detached pages). */
 export async function openOptionsPage(hash?: string): Promise<void> {
   const api = chromeApi();
@@ -41,7 +44,19 @@ export async function openOptionsPage(hash?: string): Promise<void> {
   try {
     if (hash) {
       // openOptionsPage() cannot carry a hash; the worker's 'open-options' request can, so prefer it and fall back.
-      const reply = await Promise.resolve(api.runtime.sendMessage({ type: 'open-options', hash })).catch(() => undefined);
+      // A worker that never answers (placeholder, suspended) must not leave the click dead: race a short timeout.
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), OPEN_OPTIONS_TIMEOUT_MS);
+      });
+      let sent: Promise<unknown>;
+      try {
+        sent = Promise.resolve(api.runtime.sendMessage({ type: 'open-options', hash }));
+      } catch {
+        sent = Promise.resolve(undefined);
+      }
+      const reply = await Promise.race([sent.catch(() => undefined), timeout]);
+      if (timer) clearTimeout(timer);
       if (reply && typeof reply === 'object' && (reply as { ok?: unknown }).ok === true) return;
       if (api.tabs?.create) {
         await Promise.resolve(api.tabs.create({ url: api.runtime.getURL(`options/options.html#${hash}`) })).catch(() => undefined);

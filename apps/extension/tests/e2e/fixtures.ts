@@ -7,8 +7,9 @@
  *   test('...', async ({ page, fixtureUrl, extensionId, setSettings }) => { ... });
  */
 import { test as base, chromium, type BrowserContext, type Worker } from '@playwright/test';
+import * as esbuild from 'esbuild';
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,7 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-async function startFixtureServer(): Promise<{ url: string; close: () => Promise<void> }> {
+export async function startFixtureServer(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer(async (req, res) => {
     try {
       const u = new URL(req.url ?? '/', 'http://localhost');
@@ -58,6 +59,29 @@ async function startFixtureServer(): Promise<{ url: string; close: () => Promise
 }
 
 export type Settings = Record<string, unknown>;
+
+/**
+ * Bundle a browser-side harness script (TypeScript, may import src/ and @jammarly/shared) into
+ * tests/fixtures/_build/<outName> so a fixture page can load it with <script src="_build/<outName>">.
+ * Lets a spec exercise a module in real Chromium without wiring it into the extension's content script.
+ * Returns the path relative to the fixtures root.
+ */
+export async function bundleFixtureScript(entryRelativeToExtensionRoot: string, outName: string): Promise<string> {
+  const outDir = path.join(fixturesDir, '_build');
+  await mkdir(outDir, { recursive: true });
+  await esbuild.build({
+    entryPoints: [path.join(root, entryRelativeToExtensionRoot)],
+    bundle: true,
+    format: 'iife',
+    target: ['chrome120'],
+    platform: 'browser',
+    outfile: path.join(outDir, outName),
+    sourcemap: 'inline',
+    logLevel: 'silent',
+    define: { 'process.env.NODE_ENV': JSON.stringify('test') },
+  });
+  return `_build/${outName}`;
+}
 
 type Fixtures = {
   context: BrowserContext;

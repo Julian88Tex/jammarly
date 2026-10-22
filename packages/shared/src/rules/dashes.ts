@@ -39,7 +39,10 @@ export function dashRule(ctx: RuleContext): void {
   for (const m of work.matchAll(DASH_RE)) {
     const start = m.index;
     const end = start + m[0].length;
-    if (isDigit(work.charAt(start - 1)) && isDigit(work.charAt(end))) continue; // "5 - 3", "9–5"
+    const digitBefore = isDigit(work.charAt(start - 1));
+    const digitAfter = isDigit(work.charAt(end));
+    if (digitBefore && digitAfter) continue; // "5 - 3", "9–5"
+    if (m[0] === ' - ' && (digitBefore || digitAfter)) continue; // "a - 5", "n - 1": a spaced hyphen next to a number is a minus
     const style = STYLE_OF[m[0]];
     if (style === undefined) continue;
     found.push({ start, end, style });

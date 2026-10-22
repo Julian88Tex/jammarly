@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Dialect, Paragraph, Suggestion, TextRange } from '../src/types';
 import { hashText, normalizeForMatch, splitParagraphs, stripUrlsAndCode } from '../src/text';
+import { createContext, finalizeHits } from '../src/rules/context';
 import {
   RULE_IDS,
   RULE_TITLES,
@@ -1703,6 +1704,395 @@ describe('adversarial', () => {
       // Returned hits are fresh objects: mutating one never leaks into the next call.
       if (first[0] !== undefined) first[0].range.start = -1;
       expect(runRules(text, o)[0]?.range.start).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // round two: traps found by the adversarial pass. Every "leaves alone" case below was a real false positive
+  // of the engine before the matching guard was added (research 02 §6.1: zero false positives beat recall).
+  // -------------------------------------------------------------------------
+
+  describe('round two', () => {
+    const loneI = (text: string, o: Partial<RuleOptions> = {}): string[] =>
+      only(text, 'capitalization', o).filter((h) => h.title === RULE_TITLES['capitalization.lone_i']).map((h) => `${h.original}→${h.replacement}`);
+
+    it('lone "i" inside brackets, braces or sigils, in a roman-numeral list or after a label noun is a variable or a marker', () => {
+      for (const text of [
+        'Set array[i] to zero.',
+        'Use {i} as the key.',
+        'The $i variable holds it.',
+        'x[i] = y[i] + 1 is the update.',
+        'Items i, ii and iii are done.',
+        'i: first; ii: second',
+        'See part i and part ii.',
+        'Phase i starts Monday.',
+        'Read chapter i, then act i of the play.',
+      ]) expect(loneI(text), text).toEqual([]);
+      // The pronoun is still caught, including right after a comma or at a clause start.
+      expect(loneI('Bob and i went home.')).toEqual(['i→I']);
+      expect(loneI('When i went home, i slept.')).toEqual(['i→I', 'i→I']);
+      expect(loneI('Yes, i do')).toEqual(['i→I']);
+      expect(loneI("and i, too, agree that i'm right")).toEqual(['i→I', "i'm→I'm"]);
+    });
+
+    it('an article before a function word is not an a/an slip ("between a and b", "A and B are letters")', () => {
+      for (const text of [
+        'Choose between a and b.',
+        'A and B are letters; a or b will do.',
+        'Pick a or b, then a is cheaper than b.',
+        'She has an in with the boss.',
+        'Plan a or plan b, grade a and grade b.',
+      ]) expect(only(text, 'article'), text).toEqual([]);
+      expect(fixes('A apple and a orange or an banana.', 'article')).toEqual(['A→An', 'a→an', 'an→a']);
+    });
+
+    it.each<[string, string[]]>([
+      ['an html page and a url and an sql query', []],
+      ['a html page and an url', ['a→an', 'an→a']],
+      ['an npm package over an ssh tunnel', []],
+      ['an svg, a pdf and an xml file', []],
+      ['an mba and an hr rep with a ceo title and an seo plan', []],
+      ['a kpi, a roi and a nda', ['a→an', 'a→an']],
+      ['an eu law and a eu law', ['a→an']],
+      ['a usb stick and a utf-8 file', []],
+      ['An usb stick.', ['An→A']],
+      ['an Xbox, an xkcd comic and a xylophone', []],
+      ['a Xbox and an xylophone', ['a→an', 'an→a']],
+      ['an nth time and a hmm', []],
+      ['a nth time', ['a→an']],
+      ['a myth, a gym and a rhythm', []],
+      ['an fyi and a tldr', []],
+      ['a élan vital and an élan vital', []],
+      ['an Uber and an Ubuntu box', []],
+      ['a Ubuntu box', ['a→an']],
+    ])('lower-cased acronyms are read letter by letter: %j', (text, expected) => {
+      expect(fixes(text, 'article')).toEqual(expected);
+    });
+
+    it('exposes the lower-cased acronym and x-word decisions', () => {
+      expect(articleFor('html')).toBe('an');
+      expect(articleFor('url')).toBe('a');
+      expect(articleFor('seo')).toBe('an');
+      expect(articleFor('ceo')).toBe('a');
+      expect(articleFor('nth')).toBe('an');
+      expect(articleFor('xbox')).toBe('an');
+      expect(articleFor('xylophone')).toBe('a');
+      expect(articleFor('xmas')).toBeNull();
+      expect(articleFor('hmm')).toBeNull();
+      expect(articleFor('élan')).toBeNull();
+      expect(articleFor('myth')).toBe('a');
+      expect(articleFor('un')).toBe('an'); // a truncated "under", not the United Nations
+    });
+
+    it('an introductory phrase before the first comma is not the first item of a list', () => {
+      const RULE = 'consistency_serial_comma';
+      const oxford = { styleDecisions: { serial_comma: 'oxford' } };
+      const oxfordBias = ' She likes red, white, and blue. He saw cats, dogs, and birds.';
+      for (const text of [
+        'After dinner, John and Mary left.',
+        'In the morning, Bob and Sue ran.',
+        'Last week, Alice and Bob met.',
+        'By Friday, Tom and Jerry will finish.',
+        'Yes, Bob and Sue came.',
+        'As discussed, Bob and Sue will present.',
+        'Going forward, Bob and Sue own this.',
+        'That said, Bob and Sue disagree.',
+        'Hi Bob, Mary and Jane are coming.',
+        'At Google, Bob and Sue worked together.',
+        'If possible, Bob and Sue should attend.',
+        'Every Monday, Bob and Sue meet.',
+        'Two weeks ago, Bob and Sue moved.',
+        'One day, Bob and Sue moved.',
+        'Dear Bob, Mary and Jo,',
+        'He said "hi." After dinner, Bob and Sue left.',
+      ]) {
+        expect(only(text, RULE, oxford), text).toEqual([]);
+        expect(only(text + oxfordBias, RULE), text).toEqual([]);
+      }
+      // Real lists keep their hit: after a verb, at a sentence start, of numbers and of number words.
+      expect(fixes('I like apples, oranges and pears.', RULE, oxford)).toEqual(['oranges and→oranges, and']);
+      expect(fixes('We met Bob, Sue and Tom.', RULE, oxford)).toEqual(['Sue and→Sue, and']);
+      expect(fixes('Bob, Sue and Tom came.', RULE, oxford)).toEqual(['Sue and→Sue, and']);
+      expect(fixes('In 2019, 2020 and 2021 we grew.', RULE, oxford)).toEqual(['2020 and→2020, and']);
+      expect(fixes('One, two or three.', RULE, oxford)).toEqual(['two or→two, or']);
+      expect(fixes('I bought red, white, blue and green paint.', RULE, oxford)).toEqual(['blue and→blue, and']);
+      expect(fixes('red, white, and blue; in short, Bob and Sue', RULE, { styleDecisions: { serial_comma: 'none' } })).toEqual(['white, and→white and']);
+    });
+
+    it('spelling variants inside identifiers, calls, paths and deliberate contrasts are not prose', () => {
+      const RULE = 'consistency_spelling_variant';
+      const cases: [string, Partial<RuleOptions>][] = [
+        ['Use math.floor here.', { dialect: 'en-GB' }],
+        ['Use maths.floor and obj.colour here.', {}],
+        ['The colour_value field and colour2 are set.', {}],
+        ['Call color() and colour() here; pass --colour=auto.', { dialect: 'en-GB' }],
+        ['See color/colour and center/centre forms.', { dialect: 'en-GB' }],
+        ['The #colour tag, the @colour handle and $colour.', {}],
+      ];
+      for (const [text, o] of cases) expect(only(text, RULE, o), text).toEqual([]);
+      expect(fixes("The colour's depth and the colour’s depth.", RULE)).toEqual(['colour→color', 'colour→color']);
+      expect(fixes('A colour (red) and the colour.', RULE)).toEqual(['colour→color', 'colour→color']);
+    });
+
+    it('a capitalized variant at a sentence start is a name when a possessive or a linking word joins it to another capital', () => {
+      const RULE = 'consistency_spelling_variant';
+      for (const text of [
+        "Grey's Anatomy is on tonight.",
+        'Grey’s Anatomy is on tonight.',
+        'Center for Policy Studies is a think tank.',
+        'Theatre of Dreams is a stadium.',
+        'Harbour Bridge Climb opens at nine.',
+      ]) expect(only(text, RULE), text).toEqual([]);
+      expect(only('Center for Policy Studies is a think tank.', RULE, { dialect: 'en-GB' })).toEqual([]);
+      expect(fixes('Grey matter is grey. Theatre of the absurd is a genre. Centre the text.', RULE)).toEqual(['Grey→Gray', 'grey→gray', 'Theatre→Theater', 'Centre→Center']);
+    });
+
+    it('a doubled dot before "?" or "!" is left alone: collapsing it would leave ".?" behind', () => {
+      expect(only('what..? no..! fine..', 'terminal_punctuation').map((h) => h.original)).toEqual(['..']);
+      const text = 'what..? and so on..';
+      const applied = apply(text, only(text, 'terminal_punctuation'));
+      expect(applied).toBe('what..? and so on.');
+      expect(applied).not.toMatch(/(?<![.])\.[?!]/); // never a lone "." glued to "?" or "!"
+    });
+
+    it('a straight double quote after a digit is an inch mark even before a letter; a single quote stays an apostrophe', () => {
+      const RULE = 'consistency_quote_style';
+      expect(only('a 3"x5" card and “ok” “fine” “yes”', RULE)).toEqual([]);
+      expect(fixes("the 90's and “ok” “fine” “yes”", RULE)).toEqual(["'→’"]);
+      expect(fixes('a 3"x5" card and the 90\'s', RULE, { styleDecisions: { quotes: 'curly' } })).toEqual(["'→’"]);
+    });
+
+    it('a spaced hyphen next to a number is a minus sign; an em dash next to a number is still a dash', () => {
+      const RULE = 'consistency_hyphenation';
+      const em = { styleDecisions: { dash: 'em_closed' } };
+      expect(only('n - 1 and a - 5 and 5 - a and 2020 - the year', RULE, em)).toEqual([]);
+      expect(fixes('in 2020 — the year — we grew', RULE, em)).toEqual([' — →—', ' — →—']);
+      expect(fixes('a - b and c - d', RULE, em)).toEqual([' - →—', ' - →—']);
+    });
+
+    it.each<[string, string[]]>([
+      ['It costs $5. then we left.', []], // "5." reads as a list marker: stay silent rather than guess
+      ['Version v2. then v3 shipped.', ['then→Then']],
+      ['Buy 10 lbs. of flour. then bake.', ['then→Then']],
+      ['E.g. the test. I.e. the other.', []],
+      ['Mon. and Tue. are fine. wed. is not.', ['wed→Wed']],
+      ['“Stop!” she yelled. he ran.', ['he→He']],
+      ['Really?!) then what', []],
+      ['hello world. 😀 lets go', ['hello→Hello']], // an emoji between the sentences: conservative
+      ['#winning. lol', []],
+      ['see x.com. then go', ['see→See']], // the period after a masked URL is never read as a sentence end
+      ['et al. found it. ibid. p. 5.', ['et→Et', 'ibid→Ibid']],
+      ['The U.K. and the U.S.A. are allies. so is Canada.', ['so→So']],
+      ['Read Ch. 3. chapter four is next.', []],
+    ])('sentence starts around abbreviations, markers, masks and emoji: %j', (text, expected) => {
+      expect(fixes(text, 'capitalization')).toEqual(expected);
+    });
+
+    it('chat lines that merely start with a programming keyword are prose; real statements are still skipped', () => {
+      for (const text of [
+        'let me know if the the file is ok',
+        'let me know what you think; the the draft is attached',
+        'return the the book when you can',
+        'if the the meeting moves, let me know',
+        'import duties apply; the the goods are held',
+        'try the the new place; it is great',
+        'switch the the lights off',
+        'export the the data when ready',
+      ]) expect(run(text, { context: 'chat' }).map((h) => h.rule), text).toEqual(['repeated_word']);
+      expect(run('let x = the; let the = x;', { context: 'chat' })).toEqual([]);
+      expect(run('if (the == the) { return the; }', { context: 'chat' })).toEqual([]);
+    });
+
+    it('typing guard: invisible characters, combining marks and digits at the end still count as the word in progress', () => {
+      const cases: [string, string[]][] = [
+        ['the the​', ['capitalization']], // a zero-width space glues to the last word: it is still being typed
+        ['the the‍', ['capitalization']],
+        ['the the 😀🏽', ['capitalization', 'repeated_word']], // a skin-tone modifier is a symbol: the text is complete
+        ['the the é', ['capitalization', 'repeated_word']], // "é" in progress, "the the" is finished
+        ['the the 4', ['capitalization', 'repeated_word']],
+        ['the the 4x', ['capitalization', 'repeated_word']],
+        ['the the x4', ['capitalization', 'repeated_word']],
+        ['I saw a un', []],
+        ['I saw a un ', ['article']],
+        ['I saw a un.', ['article']],
+      ];
+      for (const [text, expected] of cases) expect(run(text, { typing: true }).map((h) => h.rule), JSON.stringify(text)).toEqual(expected);
+    });
+
+    it('fingerprints ignore quote shape and space kind (dismissals survive smart-quote editors); ids follow the position', () => {
+      const render = (text: string): Suggestion | undefined =>
+        hitsToSuggestions(run(text), { blocks: splitParagraphs(text), promptVersion: 'v' }).find((x) => x.rule === 'repeated_word');
+      const straight = render("Don't don't do it");
+      const curly = render('Don’t don’t do it');
+      expect(straight?.fingerprint).toBe(curly?.fingerprint);
+      expect(straight?.original).not.toBe(curly?.original);
+      expect(straight?.id).not.toBe(curly?.id); // the replacement differs ("Don't" vs "Don’t")
+      const nbsp = render('the the cat');
+      const space = render('the the cat');
+      expect(nbsp?.fingerprint).toBe(space?.fingerprint);
+      expect(nbsp?.id).toBe(space?.id); // same rule, range and replacement
+      expect(render('and the the end')?.fingerprint).toBe(space?.fingerprint);
+      expect(render('and the the end')?.id).not.toBe(space?.id);
+    });
+
+    it('a paragraph that moves keeps its blockHash, block-relative offsets and fingerprints; only ids and absolute ranges change', () => {
+      const para = 'We left home.Then i could of gone, and the the end.';
+      const before = `Intro line.\n\n${para}`;
+      const after = `Intro line.\nAnother line was inserted here.\n\n${para}`;
+      const blockA = splitParagraphs(before).find((p) => p.text === para);
+      const blockB = splitParagraphs(after).find((p) => p.text === para);
+      if (blockA === undefined || blockB === undefined) throw new Error('fixture');
+      const a = hitsToSuggestions(run(before), { blocks: splitParagraphs(before), promptVersion: 'v' }).filter((s) => s.blockId === String(blockA.index));
+      const b = hitsToSuggestions(run(after), { blocks: splitParagraphs(after), promptVersion: 'v' }).filter((s) => s.blockId === String(blockB.index));
+      expect(a.map((s) => s.rule)).toEqual(['spacing', 'capitalization', 'confusable_word', 'repeated_word']);
+      expect(b).toHaveLength(a.length);
+      expect(blockA.hash).toBe(blockB.hash);
+      const shift = blockB.start - blockA.start;
+      expect(shift).toBeGreaterThan(0);
+      a.forEach((s, i) => {
+        const t = b[i];
+        expect(t?.fingerprint).toBe(s.fingerprint);
+        expect(t?.blockHash).toBe(s.blockHash);
+        expect(t?.range).toEqual({ start: s.range.start + shift, end: s.range.end + shift });
+        expect(t?.highlight).toEqual({ start: s.highlight.start + shift, end: s.highlight.end + shift });
+        expect(t?.id).not.toBe(s.id);
+      });
+    });
+
+    it('insertions and deletions at a block edge never highlight into the neighbouring block', () => {
+      const text = 'first line \napples, oranges and pears\nhome.Then';
+      const blocks = splitParagraphs(text);
+      const s = hitsToSuggestions(run(text, { styleDecisions: { serial_comma: 'oxford' } }), { blocks, promptVersion: 'v' });
+      const del = s.find((x) => x.kind === 'delete');
+      const serial = s.find((x) => x.rule === 'consistency_serial_comma');
+      const missing = s.find((x) => x.rule === 'spacing' && x.kind === 'insert');
+      expect(del).toMatchObject({ blockId: '0', range: { start: 10, end: 11 } });
+      expect(del?.highlight).toEqual(del?.range);
+      expect(serial).toMatchObject({ blockId: '1', kind: 'insert' });
+      expect(text.slice(serial?.highlight.start, serial?.highlight.end)).toBe('oranges and');
+      expect(missing?.blockId).toBe('2');
+      expect(text.slice(missing?.highlight.start, missing?.highlight.end)).toBe('home.Then');
+      for (const x of s) {
+        const block = blocks[Number(x.blockId)];
+        if (block === undefined) throw new Error('no block');
+        expect(x.highlight.start).toBeGreaterThanOrEqual(block.start);
+        expect(x.highlight.end).toBeLessThanOrEqual(block.start + block.text.length);
+      }
+    });
+
+    it('the hit collector enforces the schema: ranges, no-ops, titles, explanation length, confidence bounds, dedupe, masks', () => {
+      const text = 'the the cat';
+      const ctx = createContext(text, opts({ typing: true, masked: [{ start: 8, end: 11 }] }));
+      const base = { rule: 'repeated_word', severity: 'error' as const, kind: 'replace' as const, replacement: 'the', explanation: 'x', confidence: 0.9, autoApplySafe: true };
+      ctx.emit({ ...base, start: 0, end: 7 }); // valid
+      ctx.emit({ ...base, start: 0, end: 7 }); // duplicate
+      ctx.emit({ ...base, start: 0, end: 7, replacement: 'the the' }); // no-op
+      ctx.emit({ ...base, start: 0.5, end: 7 }); // fractional
+      ctx.emit({ ...base, start: Number.NaN, end: 7 });
+      ctx.emit({ ...base, start: -1, end: 7 });
+      ctx.emit({ ...base, start: 7, end: 7 }); // empty
+      ctx.emit({ ...base, start: 0, end: 12 }); // past the end
+      ctx.emit({ ...base, rule: 'not_a_rule', start: 0, end: 7 }); // unknown rule: no title, dropped
+      ctx.emit({ ...base, key: 'repeated_word.nonsense', start: 4, end: 7, replacement: 'THE' }); // unknown key: rule title
+      ctx.emit({ ...base, start: 4, end: 7, replacement: 'tha', explanation: 'e'.repeat(500), confidence: 7 });
+      ctx.emit({ ...base, start: 4, end: 7, replacement: 'thu', confidence: -3, meaningPreserving: false });
+      ctx.emit({ ...base, start: 8, end: 11, replacement: 'dog' }); // masked
+      ctx.emit({ ...base, start: 9, end: 10, replacement: 'x' }); // masked and the word in progress
+      const hits = finalizeHits(ctx);
+      expect(hits.map((h) => `${h.range.start}-${h.range.end}:${h.replacement}`)).toEqual(['0-7:the', '4-7:THE', '4-7:tha', '4-7:thu']);
+      expect(hits[1]?.title).toBe(RULE_TITLES['repeated_word']);
+      expect(hits[2]?.explanation).toHaveLength(140);
+      expect(hits[2]?.explanation.endsWith('…')).toBe(true);
+      expect(hits[2]?.confidence).toBe(1);
+      expect(hits[3]?.confidence).toBe(0);
+      expect(hits[3]?.meaningPreserving).toBe(false);
+      expect(hits[0]?.meaningPreserving).toBe(true);
+      expect(hits.every((h) => h.original === text.slice(h.range.start, h.range.end) && h.category === 'correctness')).toBe(true);
+    });
+
+    it('unknown option properties and wrong enum casing never throw; a mis-cased style decision is treated as undecided', () => {
+      const text = 'hey i think its fine. lets go. He said "hi" and “bye” and “ok”. one -- two — three — four. apples, oranges and pears; red, white, and blue; one, two, and three.';
+      const weird = {
+        ...opts({ masked: stripUrlsAndCode(text).masked }),
+        context: 'Chat',
+        formality: 'INFORMAL',
+        dialect: 'EN-gb',
+        styleDecisions: { quotes: 'Curly', dash: 'EM_CLOSED', serial_comma: 'OXFORD', double_space_after_period: 'KEEP', bogus: 'x' },
+        extra: { nested: true },
+        mutedRules: ['Spacing', 42 as unknown as string],
+      } as unknown as RuleOptions;
+      const hits = runRules(text, weird);
+      assertHitInvariants(text, hits);
+      // "Chat" is not "chat": the all-lowercase exemption and the softer severity do not apply.
+      const caps = hits.filter((h) => h.rule === 'capitalization');
+      expect(caps.map((h) => `${h.original}→${h.replacement}`)).toContain('hey→Hey');
+      expect(caps.every((h) => h.severity === 'error' && h.autoApplySafe)).toBe(true);
+      // Mis-cased decisions fall back to the majority heuristics: never auto-apply, never Tier A.
+      const consistency = hits.filter((h) => h.rule.startsWith('consistency_'));
+      expect(new Set(consistency.map((h) => h.rule))).toEqual(new Set(['consistency_quote_style', 'consistency_hyphenation', 'consistency_serial_comma']));
+      for (const h of consistency) expect(h.autoApplySafe, h.rule).toBe(false);
+      expect(hitsToSuggestions(consistency, { blocks: splitParagraphs(text), promptVersion: 'v' }).every((s) => s.tier === 'B')).toBe(true);
+      // The dialect comparison is case-insensitive by contract, so "EN-gb" is still British.
+      expect(fixes('The color of the centre.', 'consistency_spelling_variant', { dialect: 'EN-gb' as Dialect })).toEqual(['color→colour']);
+    });
+
+    const CORPUS2 = [
+      'Set array[i] to zero; items i, ii and iii are done. Bob and i went home.',
+      'Choose between a and b. Add an html page, a url and an npm package. a Xbox and an Ubuntu box.',
+      'After dinner, John and Mary left. I like apples, oranges and pears. One, two or three.',
+      'Use math.floor and colour_value here. Grey’s Anatomy is on. Grey matter is grey.',
+      'what..? fine.. a 3"x5" card and the 90\'s — “ok” “fine” “yes”; n - 1 and a — b and c -- d',
+      'let me know if the the file is ok; return it when done',
+      'Dr. smith met e.g. the U.S. team at 9:30. the colour of the centre was gray. Wow!!! Really???',
+    ];
+    const DECIDED = { serial_comma: 'oxford', dash: 'em_closed', quotes: 'curly' };
+
+    it('round-two fixtures fold to a clean fixed point within three passes and render byte-identically regardless of input order', () => {
+      for (const dialect of ['en-US', 'en-GB'] as Dialect[]) {
+        for (const start of CORPUS2) {
+          let text = start;
+          let passes = 0;
+          for (; passes < 6; passes++) {
+            const hits = runRules(text, opts({ masked: stripUrlsAndCode(text).masked, dialect, styleDecisions: DECIDED }));
+            if (hits.length === 0) break;
+            const next = apply(text, hits);
+            expect(next).not.toBe(text);
+            text = next;
+          }
+          expect(passes, `${dialect}: ${JSON.stringify(start)} → ${JSON.stringify(text)}`).toBeLessThanOrEqual(3);
+          expect(runRules(text, opts({ masked: stripUrlsAndCode(text).masked, dialect, styleDecisions: DECIDED }))).toEqual([]);
+        }
+      }
+      const text = CORPUS2.join('\n');
+      const { masked } = stripUrlsAndCode(text);
+      const a = runRules(text, opts({ masked, protectedTerms: ['Xbox', 'grey'], mutedRules: ['article', 'consistency_quote_style'], styleDecisions: { serial_comma: 'oxford', dash: 'em_closed' } }));
+      const b = runRules(text, opts({ masked: [...masked].reverse(), protectedTerms: [' GREY', 'xbox '], mutedRules: ['consistency_quote_style', 'article', 'article'], styleDecisions: { dash: 'em_closed', serial_comma: 'oxford' } }));
+      expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+      expect(a.length).toBeGreaterThan(8);
+      expect(a.some((h) => h.rule === 'article' || h.rule === 'consistency_quote_style')).toBe(false);
+      expect(a.some((h) => h.original.toLowerCase() === 'grey')).toBe(false);
+    });
+
+    it('the new guards stay linear on floods of their own triggers', () => {
+      const cases: [string, string, Partial<RuleOptions>][] = [
+        ['1,000 chat lines with code hints', 'let me know if the the file is ok; return it when done\n'.repeat(1_000), { context: 'chat' }],
+        ['abbreviation-dense prose', 'Dr. smith met Mr. jones at 9 a.m. on Mon. e.g. in St. Louis vs. Mt. Hood etc. '.repeat(600), {}],
+        ['10k sentence breaks', 'ok. '.repeat(10_000), {}],
+        ['10k lone i candidates', 'i '.repeat(10_000), {}],
+        ['5k article candidates', 'a apple '.repeat(5_000), {}],
+        ['5k lists after openers', 'After dinner, John and Mary left. '.repeat(5_000), { styleDecisions: { serial_comma: 'oxford' } }],
+        ['one 140 KB sentence with 5k list candidates', 'x apples, oranges and pears '.repeat(5_000), { styleDecisions: { serial_comma: 'oxford' } }],
+        ['2.5k spelling variants in identifiers and names', "colour_value math.floor colour2 Grey's Anatomy ".repeat(2_500), { dialect: 'en-GB' }],
+        ['20k minus signs', 'a - 5 '.repeat(20_000), { styleDecisions: { dash: 'em_closed' } }],
+        ['20k inch marks', '3"x5" '.repeat(20_000), { styleDecisions: { quotes: 'curly' } }],
+      ];
+      run('warm up the the');
+      for (const [label, text, o] of cases) {
+        const options = opts({ ...o, masked: stripUrlsAndCode(text).masked });
+        const times = [elapsed(() => runRules(text, options)), elapsed(() => runRules(text, options)), elapsed(() => runRules(text, options))].sort((x, y) => x - y);
+        expect(times[1], label).toBeLessThan(80);
+        assertHitInvariants(text, runRules(text, options));
+      }
     });
   });
 });

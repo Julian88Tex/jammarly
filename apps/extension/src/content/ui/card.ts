@@ -141,7 +141,7 @@ export class SuggestionCard {
   focus(): void {
     if (!this.hasFocus()) {
       const outside = document.activeElement;
-      if (outside && outside !== this.element.getRootNode()) this.previousFocus = outside;
+      if (outside && outside !== this.root.host && outside !== document.body) this.previousFocus = outside;
     }
     this.element.focus({ preventScroll: true });
   }
@@ -164,14 +164,14 @@ export class SuggestionCard {
     this.element.dataset.category = opts.suggestion.category;
     this.element.dataset.kind = opts.suggestion.kind;
     this.element.dataset.shortcutSafe = String(opts.shortcutSafe);
+    // The `hidden` attribute is the fallback visibility switch; it must never linger in popover mode.
+    this.element.removeAttribute('hidden');
     if (this.popover) {
       try {
         if (!this.element.matches(':popover-open')) this.element.showPopover();
       } catch {
-        this.element.removeAttribute('hidden');
+        /* not connected or already open: the attribute removal above shows it */
       }
-    } else {
-      this.element.removeAttribute('hidden');
     }
     this.reposition(opts.anchor);
     if (opts.focus || keepFocus) this.focus();
@@ -190,8 +190,9 @@ export class SuggestionCard {
       } catch {
         /* already hidden */
       }
+    } else {
+      this.element.setAttribute('hidden', '');
     }
-    this.element.setAttribute('hidden', '');
     if (hadFocus) this.restoreFocus();
     this.cb.onHidden(prev.fieldId, prev.suggestion.id);
   }
@@ -315,8 +316,7 @@ export class SuggestionCard {
         collapsed ? truncateExplanation(explanation) : explanation,
         collapsed ? ' ' : null,
         collapsed
-          ? h(
-              'button',
+          ? hostSafeButton(
               {
                 class: 'jm-learn',
                 'data-jm': 'learn-more',

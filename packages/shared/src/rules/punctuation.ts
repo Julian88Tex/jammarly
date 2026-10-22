@@ -17,6 +17,7 @@ export function terminalPunctuationRule(ctx: RuleContext): void {
     const before = start > 0 ? work.charAt(start - 1) : '';
     const after = work.charAt(end);
     if (ch === '.' && (before === '?' || before === '!')) continue; // "Hmm?.." and "Oh!.." ellipses
+    if (ch === '.' && (after === '?' || after === '!')) continue; // "what..?" is a short ellipsis; "what.?" would be worse
     if (isLetter(after) || isDigit(after)) continue; // "!!x", "1..5", "a,,b" look like code or ranges
     if (before === '' || isWs(before)) continue; // standalone "??", "!!", "../"
     if (ch === '.' && (after === '/' || before === '/')) continue; // relative paths

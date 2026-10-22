@@ -3,7 +3,7 @@
  * and the lone pronoun "i" (plus i'm / i've / i'll / i'd).
  */
 import type { RuleContext } from './context';
-import { isAbbreviationBefore, isDigit, isLetter, isLower, isUpper } from './context';
+import { LABEL_NOUNS, isAbbreviationBefore, isDigit, isLetter, isLower, isUpper } from './context';
 
 // The run-start lookbehind keeps a long "!!!!" or "....." run linear (see spacing.ts).
 const SENTENCE_BREAK_RE = /(?<![.!?])([.!?]+)(["'\u201d\u2019)\]]*)(\s+)(?=\p{Ll})/gu;
@@ -12,8 +12,11 @@ const CAMEL_RE = /\p{Ll}\p{Lu}/u;
 const HAS_DIGIT_RE = /\p{N}/u;
 const LONE_I_RE = /(?<![\p{L}\p{N}'’.\-_])i(?:(['’])(m|ve|ll|d))?(?![\p{L}\p{N}'’.\-_])/gu;
 const NO_UPPER_RE = /^[^\p{Lu}]*$/u;
-const MATH_BEFORE = '=+-*/<>^(';
-const MATH_AFTER = '=+-*/<>^)';
+// Operators, brackets and sigils around a lone "i" that make it a variable: "a + i", "array[i]", "{i}", "$i".
+const MATH_BEFORE = '=+-*/<>^([{$&|!%~';
+const MATH_AFTER = '=+-*/<>^)]}%&|';
+/** "i, ii and iii": a lone "i" followed (after an optional separator) by the next roman numeral is a list label. */
+const ROMAN_NEXT_RE = /^[,;:]?[ \u00a0]*(?:ii|iii|iv|vi|vii|viii|ix|xi|xii)(?![\p{L}\p{N}])/u;
 /**
  * A sentence-start word that opens a code statement: the keyword must be followed by a code-shaped
  * continuation ("for i in", "if (", "def f(", "const x ="), so prose such as "return to sender." or
@@ -118,10 +121,13 @@ export function capitalizationRule(ctx: RuleContext): void {
     if (prev !== '' && MATH_BEFORE.includes(prev)) continue;
     if (next !== '' && MATH_AFTER.includes(next)) continue;
     if (prev === '(' || next === ')') continue; // roman numeral "(i)"
-    // "for i in", "let i"
+    if (work.charAt(end) === ':') continue; // list label "i: first"
+    if (ROMAN_NEXT_RE.test(work.slice(end, end + 12))) continue; // "i, ii and iii"
+    // "for i in", "let i", "part i", "phase i"
     let pw = p;
     while (pw > 0 && isLetter(work.charAt(pw - 1))) pw--;
-    if (MATH_WORDS.has(work.slice(pw, p).toLowerCase())) continue;
+    const prevWord = work.slice(pw, p).toLowerCase();
+    if (MATH_WORDS.has(prevWord) || LABEL_NOUNS.has(prevWord)) continue;
     const apostrophe = m[1] ?? '';
     const suffix = m[2] ?? '';
     ctx.emit({

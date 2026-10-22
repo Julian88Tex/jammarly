@@ -19,6 +19,17 @@ export interface Attrs {
 
 const BOOLEAN_PROPS = new Set(['disabled', 'checked', 'selected', 'hidden', 'readOnly', 'readonly', 'required', 'multiple', 'autofocus', 'open']);
 
+/** Attributes that take a URL; values with a script-capable scheme are refused (see isSafeUrlValue). */
+const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'poster', 'data', 'cite', 'background']);
+/** Attributes that are HTML or script sinks under any circumstances; never settable through h(). */
+const FORBIDDEN_ATTRS = new Set(['srcdoc']);
+const SCRIPT_SCHEME_RE = /^(javascript|vbscript|data|livescript|mocha):/i;
+
+/** True unless the value starts with a scheme that can execute code or smuggle markup. Control characters and whitespace are ignored like browsers do. */
+export function isSafeUrlValue(value: string): boolean {
+  return !SCRIPT_SCHEME_RE.test(value.replace(/[\u0000- \u007f-\u009f]/g, ''));
+}
+
 function appendChild(parent: Node, child: Child): void {
   if (child === null || child === undefined || child === false) return;
   if (Array.isArray(child)) {
@@ -50,10 +61,13 @@ function applyAttrs(el: HTMLElement, attrs: Attrs): void {
       }
       continue;
     }
-    if (key.startsWith('on') && typeof raw === 'function') {
-      el.addEventListener(key.slice(2).toLowerCase(), raw as Listener);
+    if (key.startsWith('on')) {
+      // Only real listeners: a string here would become an inline handler attribute (a script sink), so it is dropped.
+      if (typeof raw === 'function') el.addEventListener(key.slice(2).toLowerCase(), raw as Listener);
       continue;
     }
+    if (FORBIDDEN_ATTRS.has(key)) continue;
+    if (URL_ATTRS.has(key) && !isSafeUrlValue(String(raw))) continue;
     if (key === 'value' && 'value' in el) {
       (el as HTMLInputElement).value = String(raw);
       continue;

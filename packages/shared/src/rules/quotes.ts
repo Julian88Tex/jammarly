@@ -39,8 +39,9 @@ export function quoteStyleRule(ctx: RuleContext): void {
     const idx = m.index;
     const ch = m[0];
     const straight = STRAIGHT.has(ch);
-    // Primes and inch/foot marks: a straight quote right after a digit (5'10", 3" screen).
-    if (straight && isDigit(work.charAt(idx - 1)) && !isLetter(work.charAt(idx + 1))) continue;
+    // Primes and inch/foot marks: a straight quote right after a digit (5'10", 3" screen, 3"x5" cards). A single
+    // quote before a letter is still an apostrophe ("the 90's").
+    if (straight && isDigit(work.charAt(idx - 1)) && (ch === '"' || !isLetter(work.charAt(idx + 1)))) continue;
     positions.push({ idx, straight });
     if (straight) straightCount++;
     else curlyCount++;
