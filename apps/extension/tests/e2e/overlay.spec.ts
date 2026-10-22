@@ -332,4 +332,121 @@ test.describe('overlay UI (Chromium)', () => {
     });
     expect(hidden).toBe(true);
   });
+  test('sentence card: hovering a word in a two-error sentence shows every fix inline; clicking it accepts both', async ({ page, fixtureUrl }) => {
+    await openHarness(page, fixtureUrl);
+    await page.evaluate(() => window.__jm.useRealOffsets());
+    const card = page.locator('[data-jm="card"]');
+    const word = page.locator('[data-err="s1"]');
+    await word.hover();
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    await expect(card).toHaveAttribute('data-suggestion-ids', 's1 s2');
+    expect(await card.evaluate((el) => el.matches(':popover-open'))).toBe(true);
+    await expect(card.locator('[data-jm="card-title"]')).toHaveText('Correct the sentence');
+    await expect(card.locator('[data-jm="card-badge"]')).toHaveText('Auto');
+    const content = card.locator('[data-jm="sentence-content"]');
+    await expect(content).toBeVisible();
+    await expect(content.locator('s')).toHaveText(['teh', 'tomorow']);
+    await expect(content.locator('strong')).toHaveText(['the', 'tomorrow']);
+    await expect(content).toHaveText('Their going to tehthe store tomorowtomorrow.');
+    const style = await content.locator('s').first().evaluate((el) => getComputedStyle(el).textDecorationLine);
+    expect(style).toContain('line-through');
+    const weight = await content.locator('strong').first().evaluate((el) => Number(getComputedStyle(el).fontWeight));
+    expect(weight).toBeGreaterThanOrEqual(700);
+    const cardBox = (await card.boundingBox())!;
+    const wordBox = (await word.boundingBox())!;
+    expect(cardBox.y).toBeGreaterThanOrEqual(wordBox.y + wordBox.height + 7);
+    expect(cardBox.width).toBeLessThanOrEqual(420);
+
+    // every grouped underline is active (3 px), the third suggestion's is not
+    const heights = () =>
+      page.evaluate(() => {
+        const root = document.querySelector('jammarly-root')!.shadowRoot!;
+        const hgt = (id: string) => root.querySelector<HTMLElement>(`[data-jm="underline"][data-suggestion-id="${id}"]`)!.getBoundingClientRect().height;
+        return [hgt('s1'), hgt('s2'), hgt('s3')];
+      });
+    await expect.poll(heights).toEqual([3, 3, 2]);
+
+    await content.click();
+    await expect(card).toHaveAttribute('data-open', 'false');
+    const log = await events(page);
+    const acceptAll = log.filter((e) => e.name === 'onAcceptAll');
+    expect(acceptAll).toEqual([{ name: 'onAcceptAll', args: ['f1', { group: 'all', suggestionIds: ['s1', 's2'] }] }]);
+    expect(log.some((e) => e.name === 'onAccept')).toBe(false);
+
+    // the other sentence has one suggestion: its own single card
+    await page.locator('[data-err="s3"]').hover();
+    await expect(card).toHaveAttribute('data-suggestion-id', 's3');
+    await expect(card).toHaveAttribute('data-mode', 'single');
+  });
+
+  test('sentence card: "Show one at a time" sticks; keyboard accepts all; shortcut-safe leaves letters alone', async ({ page, fixtureUrl }) => {
+    await openHarness(page, fixtureUrl);
+    await page.evaluate(() => window.__jm.useRealOffsets());
+    const card = page.locator('[data-jm="card"]');
+    await page.locator('[data-err="s2"]').hover();
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    // keyboard: focus the card and press d (dismiss all)
+    await card.focus();
+    await page.keyboard.press('d');
+    let log = await events(page);
+    expect(log.filter((e) => e.name === 'onDismiss').map((e) => e.args)).toEqual([
+      ['f1', 's1'],
+      ['f1', 's2'],
+    ]);
+    await expect(card).toHaveAttribute('data-open', 'false');
+
+    // shortcut-safe: letters are left alone, Enter accepts all
+    await page.evaluate(() => window.__jm.setOptions({ shortcutSafe: true }));
+    await page.mouse.move(1000, 600);
+    await page.locator('[data-err="s1"]').hover();
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    await card.focus();
+    await page.keyboard.press('a');
+    await page.keyboard.press('d');
+    log = await events(page);
+    expect(log.filter((e) => e.name === 'onAcceptAll').length).toBe(0);
+    expect(log.filter((e) => e.name === 'onDismiss').length).toBe(2);
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await page.keyboard.press('Enter');
+    log = await events(page);
+    expect(log.filter((e) => e.name === 'onAcceptAll').map((e) => e.args)).toEqual([['f1', { group: 'all', suggestionIds: ['s1', 's2'] }]]);
+
+    // "Show one at a time": the hovered suggestion's single card, remembered for the field
+    await page.mouse.move(1000, 600);
+    await page.locator('[data-err="s2"]').hover();
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    await card.locator('[data-jm="one-at-a-time"]').click();
+    await expect(card).toHaveAttribute('data-mode', 'single');
+    await expect(card).toHaveAttribute('data-suggestion-id', 's2');
+    await expect(card).toBeVisible();
+    await page.mouse.move(1000, 600);
+    await expect(card).toHaveAttribute('data-open', 'false', { timeout: 2000 });
+    await page.locator('[data-err="s1"]').hover();
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await expect(card).toHaveAttribute('data-mode', 'single');
+    await expect(card).toHaveAttribute('data-suggestion-id', 's1');
+  });
+
+  test('sentence card: rapid hover between sentences never shows a stale group', async ({ page, fixtureUrl }) => {
+    await openHarness(page, fixtureUrl);
+    await page.evaluate(() => window.__jm.useRealOffsets());
+    const card = page.locator('[data-jm="card"]');
+    const s1 = (await page.locator('[data-err="s1"]').boundingBox())!;
+    const s3 = (await page.locator('[data-err="s3"]').boundingBox())!;
+    // sweep s1 -> s3 faster than the hover intent
+    await page.mouse.move(s1.x + 3, s1.y + s1.height / 2);
+    await page.mouse.move(s3.x + 5, s3.y + s3.height / 2, { steps: 2 });
+    await expect(card).toHaveAttribute('data-open', 'true');
+    await expect(card).toHaveAttribute('data-mode', 'single');
+    await expect(card).toHaveAttribute('data-suggestion-id', 's3');
+    await page.mouse.move(s1.x + 3, s1.y + s1.height / 2, { steps: 2 });
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    await expect(card).toHaveAttribute('data-suggestion-ids', 's1 s2');
+    const log = await events(page);
+    expect(log.some((e) => e.name === 'onCardHidden' && e.args[1] === 's3')).toBe(true);
+  });
 });
+

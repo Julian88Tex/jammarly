@@ -9,6 +9,11 @@
  * Hit testing: because the host takes no pointer events, a throttled capture-phase `pointermove` listener on the
  * document tests the pointer against the underline fragment rects. 100 ms hover intent opens the card, 250 ms grace
  * on leave closes it, a click on a fragment opens it immediately. One card and one menu exist per overlay.
+ *
+ * Sentence card: when the hovered (or clicked) suggestion's sentence holds two or more groupable suggestions
+ * (see ./sentence), the card shows the whole sentence and its Accept raises
+ * `onAcceptAll(fieldId, { group: 'all', suggestionIds })`. "Show one at a time" switches the field to single cards for
+ * the rest of the field session. Programmatic opens (openCard / focusSuggestion) always show the single card.
  */
 import type { CheckError, CheckPass, DismissReason, FieldStatus, Suggestion, ToneAnalysis } from '@jammarly/shared/types';
 import type { FieldAdapter } from '../field-adapter';
@@ -20,6 +25,7 @@ import { AcceptMenu, type MenuContext } from './menu';
 import { applyStyles, type StyleMode } from './styles';
 import { ToastStack } from './toast';
 import { UnderlineLayer, toRectLike, type RectLike } from './underlines';
+import { sentenceGroupFor, type SentenceGroup } from './sentence';
 
 export const HOST_TAG = 'jammarly-root';
 export const HOST_ATTR = 'data-jammarly-shadow-root';
@@ -46,6 +52,10 @@ export interface OverlayDebugInfo {
   visibleUnderlines: number;
   cardOpen: boolean;
   cardSuggestionId: string | null;
+  /** 'single' | 'sentence' while the card is open. */
+  cardMode: string | null;
+  /** Every suggestion the open card shows (the group for a sentence card). */
+  cardSuggestionIds: string[];
   menuOpen: boolean;
   toasts: number;
   pointerInside: boolean;
@@ -99,6 +109,8 @@ interface FieldRecord {
   unsupportedReason: string;
   optedOut: boolean;
   box: RectLike | null;
+  /** "Show one at a time" was chosen in a sentence card: single cards for the rest of the field session. */
+  oneAtATime: boolean;
   api: FieldOverlay;
 }
 
@@ -165,13 +177,30 @@ class OverlayImpl implements Overlay {
       },
       onRequestClose: () => this.closeCard(),
       onShown: (fieldId, suggestionId) => {
-        this.fields.get(fieldId)?.layer.setActive(suggestionId);
+        this.syncActive(fieldId);
         this.events.onCardShown(fieldId, suggestionId);
       },
       onHidden: (fieldId, suggestionId) => {
-        const f = this.fields.get(fieldId);
-        if (f && this.card.currentTarget()?.suggestionId !== suggestionId) f.layer.setActive(null);
+        this.syncActive(fieldId);
         this.events.onCardHidden(fieldId, suggestionId);
+      },
+      onAcceptGroup: (fieldId, suggestionIds) => {
+        this.introSeen = true;
+        this.closeCard();
+        this.events.onAcceptAll(fieldId, { group: 'all', suggestionIds: [...suggestionIds] });
+      },
+      onDismissGroup: (fieldId, suggestionIds) => {
+        this.introSeen = true;
+        this.closeCard();
+        for (const id of suggestionIds) this.events.onDismiss(fieldId, id);
+      },
+      onShowOneAtATime: (fieldId, suggestionId) => {
+        const f = this.fields.get(fieldId);
+        if (!f) return;
+        f.oneAtATime = true;
+        const item = f.byId.get(suggestionId);
+        if (item) this.showCard(f, item, this.card.currentAnchor() ?? undefined, false);
+        else this.closeCard();
       },
       onPointerEnter: () => {
         this.pointerInside = true;
@@ -242,6 +271,7 @@ class OverlayImpl implements Overlay {
       unsupportedReason: '',
       optedOut: false,
       box: null,
+      oneAtATime: false,
       api: null as unknown as FieldOverlay,
     };
     record.api = this.makeFieldApi(record);
@@ -278,7 +308,7 @@ class OverlayImpl implements Overlay {
     if (target) {
       const f = this.fields.get(target.fieldId);
       const item = f?.byId.get(target.suggestionId);
-      if (f && item) this.showCard(f, item, undefined, false);
+      if (f && item) this.showCard(f, item, undefined, false, this.card.currentMode() === 'sentence');
     }
   }
 
@@ -382,9 +412,12 @@ class OverlayImpl implements Overlay {
     f.layer.updateRects(f.opts.showUnderlines ? items : []);
     const target = this.card.currentTarget();
     if (target && target.fieldId === f.fieldId) {
-      const item = f.byId.get(target.suggestionId);
-      if (!item) this.closeCard();
-      else this.showCard(f, item, firstRect(item) ?? undefined, false);
+      if (this.card.currentMode() === 'sentence') this.refreshSentenceCard(f, target.suggestionId);
+      else {
+        const item = f.byId.get(target.suggestionId);
+        if (!item) this.closeCard();
+        else this.showCard(f, item, firstRect(item) ?? undefined, false);
+      }
     }
     if (this.hover && this.hover.fieldId === f.fieldId && !f.byId.has(this.hover.suggestionId)) this.clearHover();
     if (this.menu.currentFieldId() === f.fieldId) this.menu.refresh({ items });
@@ -404,11 +437,20 @@ class OverlayImpl implements Overlay {
 
   // ---------------------------------------------------------------------- card
 
-  private showCard(f: FieldRecord, item: UnderlineItem, anchor: RectLike | undefined, focus: boolean): void {
+  /**
+   * Show the card for `item`. With `allowGroup` (pointer-driven opens) the sentence card is shown instead when the
+   * item's sentence holds a group of two or more and the field has not switched to "one at a time".
+   */
+  private showCard(f: FieldRecord, item: UnderlineItem, anchor: RectLike | undefined, focus: boolean, allowGroup = false): void {
     const rect = anchor ?? firstRect(item) ?? f.box ?? { left: 8, top: 8, right: 8, bottom: 8, width: 0, height: 0 };
     this.clearIntent();
     this.cancelGrace();
     if (this.menu.isOpen()) this.menu.close();
+    const group = allowGroup ? this.groupFor(f, item.suggestion.id) : null;
+    if (group) {
+      this.card.showSentence({ fieldId: f.fieldId, group, anchor: rect, shortcutSafe: f.opts.shortcutSafe, showIntro: !this.introSeen, focus });
+      return;
+    }
     this.card.show({
       fieldId: f.fieldId,
       suggestion: item.suggestion,
@@ -423,6 +465,55 @@ class OverlayImpl implements Overlay {
     this.clearIntent();
     this.cancelGrace();
     this.card.hide();
+  }
+
+  /**
+   * The sentence group around `suggestionId`, or null for the single card. While a sentence card already shows this
+   * suggestion, the group keeps its current hovered member (hovering or clicking another member does not re-target
+   * "Show one at a time" and the ⋯ menu).
+   */
+  private groupFor(f: FieldRecord, suggestionId: string): SentenceGroup | null {
+    if (f.oneAtATime) return null;
+    let text: string;
+    try {
+      text = f.adapter.getText();
+    } catch {
+      return null;
+    }
+    const target = this.card.currentTarget();
+    if (target && target.fieldId === f.fieldId && this.card.currentMode() === 'sentence' && target.suggestionId !== suggestionId && this.card.currentIds().includes(suggestionId)) {
+      const keep = sentenceGroupFor(f.items, text, target.suggestionId);
+      if (keep && keep.members.some((m) => m.id === suggestionId)) return keep;
+    }
+    return sentenceGroupFor(f.items, text, suggestionId);
+  }
+
+  /** New underlines while a sentence card is open: re-render it around a surviving member, or close it. */
+  private refreshSentenceCard(f: FieldRecord, hoveredId: string): void {
+    const hovered = f.byId.get(hoveredId);
+    if (hovered) {
+      // Re-group; with fewer than two members left this falls back to the hovered suggestion's single card.
+      this.showCard(f, hovered, firstRect(hovered) ?? undefined, false, true);
+      return;
+    }
+    for (const id of this.card.currentIds()) {
+      const item = f.byId.get(id);
+      if (!item) continue;
+      const group = this.groupFor(f, id);
+      if (group) {
+        this.showCard(f, item, firstRect(item) ?? undefined, false, true);
+        return;
+      }
+    }
+    this.closeCard();
+  }
+
+  /** Underline active state follows the card: every suggestion it shows is drawn 3 px and tinted. */
+  private syncActive(fieldId: string): void {
+    const f = this.fields.get(fieldId);
+    if (!f) return;
+    const target = this.card.currentTarget();
+    f.layer.setActiveIds(target && target.fieldId === fieldId ? this.card.currentIds() : []);
   }
 
   // ---------------------------------------------------------------------- menu
@@ -518,13 +609,13 @@ class OverlayImpl implements Overlay {
         this.hover = { fieldId: hit.field.fieldId, suggestionId: hit.suggestionId };
         hit.field.layer.setHover(hit.suggestionId);
         const target = this.card.currentTarget();
-        const alreadyOpen = target && target.fieldId === hit.field.fieldId && target.suggestionId === hit.suggestionId;
+        const alreadyOpen = target && target.fieldId === hit.field.fieldId && (target.suggestionId === hit.suggestionId || this.card.currentIds().includes(hit.suggestionId));
         if (!alreadyOpen) {
           const { field, suggestionId, rect } = hit;
           this.intentTimer = setTimeout(() => {
             this.intentTimer = null;
             const item = field.byId.get(suggestionId);
-            if (item && this.fields.has(field.fieldId)) this.showCard(field, item, rect, false);
+            if (item && this.fields.has(field.fieldId)) this.showCard(field, item, rect, false, true);
           }, HOVER_INTENT_MS);
         }
       }
@@ -542,7 +633,7 @@ class OverlayImpl implements Overlay {
     if (hit) {
       const item = hit.field.byId.get(hit.suggestionId);
       if (item) {
-        this.showCard(hit.field, item, hit.rect, false);
+        this.showCard(hit.field, item, hit.rect, false, true);
         return;
       }
     }
@@ -556,7 +647,7 @@ class OverlayImpl implements Overlay {
     const hit = this.findHit(ev.clientX, ev.clientY);
     if (!hit) return;
     const item = hit.field.byId.get(hit.suggestionId);
-    if (item) this.showCard(hit.field, item, hit.rect, false);
+    if (item) this.showCard(hit.field, item, hit.rect, false, true);
   }
 
   private onDocumentKeydown(ev: KeyboardEvent): void {
@@ -586,7 +677,7 @@ class OverlayImpl implements Overlay {
       this.graceTimer = null;
       if (!this.card.isOpen() || this.card.hasFocus() || this.pointerInside) return;
       const target = this.card.currentTarget();
-      if (target && this.hover && this.hover.suggestionId === target.suggestionId && this.hover.fieldId === target.fieldId) return;
+      if (target && this.hover && this.hover.fieldId === target.fieldId && (this.hover.suggestionId === target.suggestionId || this.card.currentIds().includes(this.hover.suggestionId))) return;
       this.closeCard();
     }, LEAVE_GRACE_MS);
   }
@@ -637,6 +728,8 @@ class OverlayImpl implements Overlay {
       visibleUnderlines: visible,
       cardOpen: this.card.isOpen(),
       cardSuggestionId: this.card.currentTarget()?.suggestionId ?? null,
+      cardMode: this.card.currentMode(),
+      cardSuggestionIds: this.card.currentIds(),
       menuOpen: this.menu.isOpen(),
       toasts: this.toasts.count(),
       pointerInside: this.pointerInside,

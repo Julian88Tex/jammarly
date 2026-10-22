@@ -33,6 +33,8 @@ interface HarnessApi {
   attachInput(id: string): void;
   openCard(id: string): void;
   focusSuggestion(id: string): void;
+  /** Switch the suggestions to real offsets into the editor text (the sentence card groups by them). */
+  useRealOffsets(): void;
 }
 
 declare global {
@@ -96,11 +98,25 @@ const editor = document.getElementById('editor') as HTMLElement;
 const overlay = createOverlay(overlayEvents);
 const field = overlay.attach('f1', adapterFor(editor, 'contenteditable'), OPTIONS);
 
+/**
+ * By default the ranges are synthetic (not real offsets), so no sentence ever groups and the single-card specs keep
+ * their card. `useRealOffsets()` switches to the span's real offset in `editor.textContent`.
+ */
+let realOffsets = false;
+
+function realOffsetOf(span: HTMLElement): number {
+  const r = document.createRange();
+  r.setStart(editor, 0);
+  r.setEndBefore(span);
+  return r.toString().length;
+}
+
 function suggestionsFromSpans(): UnderlineItem[] {
   const items: UnderlineItem[] = [];
   let offset = 0;
   for (const span of Array.from(editor.querySelectorAll<HTMLElement>('[data-err]'))) {
     const original = span.textContent ?? '';
+    if (realOffsets) offset = realOffsetOf(span);
     const id = span.dataset.err ?? '';
     const category = (span.dataset.category as SuggestionCategory | undefined) ?? 'correctness';
     const kind = (span.dataset.kind as SuggestionKind | undefined) ?? 'replace';
@@ -195,5 +211,9 @@ window.__jm = {
     if (item && item.rects[0]) field.openCard(id, item.rects[0]);
   },
   focusSuggestion: (id) => field.focusSuggestion(id),
+  useRealOffsets: () => {
+    realOffsets = true;
+    field.setUnderlines(suggestionsFromSpans());
+  },
 };
 document.documentElement.setAttribute('data-jm-harness', 'ready');

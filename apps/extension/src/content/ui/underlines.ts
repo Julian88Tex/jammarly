@@ -108,7 +108,7 @@ const defaultScheduler: Scheduler = {
 export class UnderlineLayer {
   readonly container: HTMLDivElement;
   private fragments: Fragment[] = [];
-  private activeId: string | null = null;
+  private activeIds = new Set<string>();
   private hoverId: string | null = null;
   private pendingIds = new Set<string>();
   private pendingPlan: FragmentPlan[] | null = null;
@@ -137,9 +137,20 @@ export class UnderlineLayer {
 
   /** The suggestion whose card is open: 3 px and tinted. */
   setActive(id: string | null): void {
-    if (this.activeId === id) return;
-    this.activeId = id;
+    this.setActiveIds(id === null ? [] : [id]);
+  }
+
+  /** Several suggestions active at once (the sentence card: every grouped underline is 3 px and tinted). */
+  setActiveIds(ids: Iterable<string>): void {
+    const next = new Set(ids);
+    if (next.size === this.activeIds.size && [...next].every((id) => this.activeIds.has(id))) return;
+    this.activeIds = next;
     this.refreshStates();
+  }
+
+  /** Ids currently drawn in the active (card open) state. */
+  activeSuggestionIds(): string[] {
+    return Array.from(this.activeIds);
   }
 
   /** The suggestion under the pointer (also drawn in the active style). */
@@ -290,7 +301,7 @@ export class UnderlineLayer {
   }
 
   private applyState(f: Fragment): void {
-    const active = f.suggestionId !== '' && (f.suggestionId === this.activeId || f.suggestionId === this.hoverId);
+    const active = f.suggestionId !== '' && (this.activeIds.has(f.suggestionId) || f.suggestionId === this.hoverId);
     const pending = this.pendingIds.has(f.suggestionId);
     f.el.classList.toggle('jm-ul-active', active);
     f.el.classList.toggle('jm-ul-pending', pending);

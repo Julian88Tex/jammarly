@@ -273,6 +273,31 @@ button {
 .jm-replacement:hover, .jm-replacement:focus-visible { background: color-mix(in srgb, var(--jm-accent) 12%, transparent); outline: none; }
 .jm-replacement:focus-visible { box-shadow: 0 0 0 2px var(--jm-accent); }
 
+/* sentence card: the whole sentence inline, one button that accepts every change */
+.jm-card[data-mode="sentence"] { max-width: 420px; }
+.jm-sentence-title { flex: 1 1 auto; margin: 0; }
+.jm-sentence {
+  display: block;
+  width: 100%;
+  margin: 8px 0 8px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--jm-radius-btn);
+  background: transparent;
+  color: var(--jm-text);
+  font: inherit;
+  font-size: var(--jm-fs-lg);
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.jm-sentence:hover, .jm-sentence:focus-visible { background: color-mix(in srgb, var(--jm-accent) 8%, transparent); outline: none; }
+.jm-sentence:focus-visible { box-shadow: 0 0 0 2px var(--jm-accent); }
+.jm-sentence .jm-original { margin-right: 2px; }
+.jm-sentence-new { color: var(--jm-accent); font-weight: 700; }
+
 .jm-options {
   margin: 2px 0 6px;
   padding: 0;

@@ -27,13 +27,16 @@ const CONSENTED_PROFILE = {
   },
 };
 
-async function seed(context: import('@playwright/test').BrowserContext, extensionId: string): Promise<void> {
+/** `showFloatingButton: 'default'` leaves the device default (off). */
+async function seed(context: import('@playwright/test').BrowserContext, extensionId: string, showFloatingButton: boolean | 'default' = true): Promise<void> {
   const id = PINNED_ID || extensionId;
   const page = await context.newPage();
   await page.goto(`chrome-extension://${id}/sidepanel/sidepanel.html`);
+  const settings: Record<string, unknown> = { provider: 'mock', apiKey: '', debounceMs: 300 };
+  if (showFloatingButton !== 'default') settings.showFloatingButton = showFloatingButton;
   await page.evaluate(
     (s) => new Promise<void>((resolve) => chrome.storage.local.set(s, () => resolve())),
-    { settings: { provider: 'mock', apiKey: '', debounceMs: 300, showFloatingButton: true }, profile: CONSENTED_PROFILE },
+    { settings, profile: CONSENTED_PROFILE },
   );
   await page.waitForTimeout(300);
   await page.close();
@@ -161,5 +164,72 @@ test.describe('in-page flow (mock engine)', () => {
 
     await send({ type: 'set-field-enabled', enabled: false });
     await expect.poll(async () => underlines.count(), { timeout: 5_000 }).toBe(0);
+  });
+  test('the sentence card applies every fix of the hovered sentence in one go (floating button hidden)', async ({ context, extensionId, fixtureUrl }) => {
+    await seed(context, extensionId, 'default'); // device default: no floating button
+    const page = await context.newPage();
+    await page.goto(fixtureUrl('textarea.html'));
+    await expect(page.locator('html')).toHaveAttribute('data-jammarly', 'loaded');
+    const ta = page.locator('#main');
+    await ta.click();
+    await page.keyboard.press('End');
+    const underlines = shadow(page).locator('[data-jm="underline"]');
+    // rules first, then the mock engine: wait until the sentence's spelling fix is underlined too
+    await expect.poll(async () => underlines.count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(6);
+    const button = shadow(page).locator('[data-jm="button"]');
+    await expect(button).toBeHidden();
+    // the hidden button still tracks status: wait for the deep pass so the suggestion set is final
+    await expect(button).toHaveAttribute('data-checked-by', 'deep', { timeout: 15_000 });
+    await expect(button).toHaveAttribute('data-status', 'suggestions');
+    const before = await ta.inputValue();
+
+    // Find the underline of the "the the" fix: open the card from any underline of the first line, read which change
+    // strikes a repeated "the", then hover exactly that underline.
+    const card = shadow(page).locator('[data-jm="card"]');
+    const firstLine = await underlines.evaluateAll((els) => {
+      const rows = els.map((el) => ({ id: el.getAttribute('data-suggestion-id') ?? '', r: el.getBoundingClientRect() })).filter((x) => x.r.width > 0);
+      const top = Math.min(...rows.map((x) => x.r.top));
+      return rows.filter((x) => Math.abs(x.r.top - top) < 2).map((x) => ({ id: x.id, x: x.r.left + x.r.width / 2, y: x.r.top + 1 }));
+    });
+    expect(firstLine.length).toBeGreaterThanOrEqual(2);
+    await page.mouse.move(firstLine[0]!.x, firstLine[0]!.y);
+    await expect(card).toHaveAttribute('data-open', 'true', { timeout: 5_000 });
+    const theThe = await card.locator('[data-jm="sentence-change"]').evaluateAll((els) => {
+      const hit = els.find((el) => /^\s*the(?: the)?\s*$/.test(el.querySelector('s')?.textContent ?? ''));
+      return hit?.getAttribute('data-suggestion-id') ?? null;
+    });
+    expect(theThe).not.toBeNull();
+    await page.mouse.move(5, 5);
+    await expect(card).toHaveAttribute('data-open', 'false', { timeout: 2_000 });
+    const target = await underlines.evaluateAll((els, id) => {
+      const el = els.find((e) => e.getAttribute('data-suggestion-id') === id)!;
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + 1 };
+    }, theThe);
+    await page.mouse.move(target.x, target.y);
+    await expect(card).toBeVisible({ timeout: 5_000 });
+    await expect(card).toHaveAttribute('data-suggestion-id', theThe!);
+    await expect(card).toHaveAttribute('data-mode', 'sentence');
+    await expect(card.locator('[data-jm="card-title"]')).toHaveText('Correct the sentence');
+    await expect(card.locator('[data-jm="sentence-content"]')).toContainText('tomorow');
+    const ids = ((await card.getAttribute('data-suggestion-ids')) ?? '').split(' ').filter(Boolean);
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+
+    await card.locator('[data-jm="accept"]').click();
+    const toast = shadow(page).locator('[data-jm="toast"]');
+    await expect(toast).toBeVisible({ timeout: 10_000 });
+    await expect(toast).toContainText(`Applied ${ids.length} changes`);
+    await expect(toast.locator('[data-jm="toast-undo"]')).toBeVisible();
+    const after = await ta.inputValue();
+    const [firstBefore, restBefore] = [before.slice(0, before.indexOf('idea.') + 5), before.slice(before.indexOf('idea.') + 5)];
+    const firstAfter = after.slice(0, after.indexOf('idea.') + 5);
+    // every fix of the first sentence landed in one transaction
+    expect(firstAfter).toBe("They're going to the store tomorrow, and I don't think it's a good idea.");
+    expect(firstAfter).not.toBe(firstBefore);
+    // the second sentence is untouched
+    expect(after.slice(after.indexOf('idea.') + 5)).toBe(restBefore);
+    // one Undo restores the whole sentence
+    await toast.locator('[data-jm="toast-undo"]').click();
+    await expect.poll(async () => ta.inputValue()).toBe(before);
   });
 });

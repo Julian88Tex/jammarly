@@ -8,11 +8,18 @@
  * arrows are claimed and unhandled keys are never preventDefault-ed or stopped.
  *
  * Rendered as `popover="manual"` (top layer) when the Popover API exists, else as a positioned div.
+ *
+ * Sentence mode (`showSentence`): Grammarly's sentence-level card. One card for every groupable suggestion of a
+ * sentence: header "Correct the sentence" / "Improve the sentence" (+ Auto when all are tier A), the whole sentence
+ * inline with each original struck through and its bold replacement (the content is one button that accepts
+ * everything), then Accept (all, one transaction), trash (dismiss all), "Show one at a time" and ⋯ (report / turn
+ * off for the hovered suggestion's rule). Keyboard is the same as the single card.
  */
 import type { DismissReason, Suggestion } from '@jammarly/shared/types';
 import { CATEGORY_LABELS, placeCard } from './overlay-api';
 import { categoryDot, focusableWithin, h, isolatePointerEvents, keepHostSelection, setChildren, svgIcon, uid } from './dom';
 import type { RectLike } from './underlines';
+import { sentencePieces, sentenceTitle, type SentenceGroup } from './sentence';
 
 export const INTRO_TEXT = 'Jammarly helps you write clearly and mistake-free.';
 export const EXPLANATION_COLLAPSE_AT = 140;
@@ -32,7 +39,24 @@ export interface CardCallbacks {
   onHidden(fieldId: string, suggestionId: string): void;
   onPointerEnter(): void;
   onPointerLeave(): void;
+  /** Sentence card: accept every grouped suggestion as one transaction. */
+  onAcceptGroup(fieldId: string, suggestionIds: string[]): void;
+  /** Sentence card: dismiss every grouped suggestion. */
+  onDismissGroup(fieldId: string, suggestionIds: string[]): void;
+  /** Sentence card: switch to the single-suggestion card for the hovered suggestion. */
+  onShowOneAtATime(fieldId: string, suggestionId: string): void;
 }
+
+export interface SentenceCardShowOptions {
+  fieldId: string;
+  group: SentenceGroup;
+  anchor: RectLike;
+  shortcutSafe: boolean;
+  showIntro: boolean;
+  focus?: boolean;
+}
+
+export type CardMode = 'single' | 'sentence';
 
 export interface CardShowOptions {
   fieldId: string;
@@ -84,11 +108,15 @@ export function supportsPopover(): boolean {
 
 interface Current {
   fieldId: string;
+  /** The single card's suggestion, or the hovered member of a sentence card. */
   suggestion: Suggestion;
   anchor: RectLike;
   shortcutSafe: boolean;
   showIntro: boolean;
   signature: string;
+  mode: CardMode;
+  /** Every suggestion the card shows (one for the single card, the members for a sentence card). */
+  ids: string[];
 }
 
 export class SuggestionCard {
@@ -133,6 +161,21 @@ export class SuggestionCard {
     return this.current ? { fieldId: this.current.fieldId, suggestionId: this.current.suggestion.id } : null;
   }
 
+  /** The rect the open card is anchored to. */
+  currentAnchor(): RectLike | null {
+    return this.current ? { ...this.current.anchor } : null;
+  }
+
+  /** 'single' or 'sentence' while open, else null. */
+  currentMode(): CardMode | null {
+    return this.current?.mode ?? null;
+  }
+
+  /** Ids of every suggestion the open card shows (empty when closed). */
+  currentIds(): string[] {
+    return this.current ? [...this.current.ids] : [];
+  }
+
   hasFocus(): boolean {
     const active = this.root.activeElement;
     return !!active && this.element.contains(active);
@@ -147,23 +190,43 @@ export class SuggestionCard {
   }
 
   show(opts: CardShowOptions): void {
-    const signature = signatureOf(opts);
+    this.present(
+      { fieldId: opts.fieldId, suggestion: opts.suggestion, anchor: opts.anchor, shortcutSafe: opts.shortcutSafe, showIntro: opts.showIntro, signature: signatureOf(opts), mode: 'single', ids: [opts.suggestion.id] },
+      opts.focus === true,
+      () => this.render(opts),
+    );
+  }
+
+  /** Show the sentence-level card for a group of two or more suggestions. */
+  showSentence(opts: SentenceCardShowOptions): void {
+    const g = opts.group;
+    this.present(
+      { fieldId: opts.fieldId, suggestion: g.hovered, anchor: opts.anchor, shortcutSafe: opts.shortcutSafe, showIntro: opts.showIntro, signature: sentenceSignatureOf(opts), mode: 'sentence', ids: g.members.map((m) => m.id) },
+      opts.focus === true,
+      () => this.renderSentence(opts),
+    );
+  }
+
+  private present(next: Current, focus: boolean, render: () => void): void {
     const prev = this.current;
-    const sameSuggestion = prev !== null && prev.suggestion.id === opts.suggestion.id && prev.fieldId === opts.fieldId;
-    if (prev && !sameSuggestion) this.cb.onHidden(prev.fieldId, prev.suggestion.id);
+    const sameField = prev !== null && prev.fieldId === next.fieldId;
+    const sameView = sameField && prev.mode === next.mode && prev.suggestion.id === next.suggestion.id;
     const keepFocus = this.hasFocus();
-    if (!prev || !sameSuggestion || prev.signature !== signature) {
-      this.moreOpen = sameSuggestion ? this.moreOpen : false;
-      this.explanationExpanded = sameSuggestion ? this.explanationExpanded : false;
-      this.render(opts);
+    if (!prev || !sameView || prev.signature !== next.signature) {
+      this.moreOpen = sameView ? this.moreOpen : false;
+      this.explanationExpanded = sameView ? this.explanationExpanded : false;
+      render();
     }
-    this.current = { ...opts, signature };
+    this.current = next;
+    const s = next.suggestion;
     this.element.dataset.open = 'true';
-    this.element.dataset.suggestionId = opts.suggestion.id;
-    this.element.dataset.fieldId = opts.fieldId;
-    this.element.dataset.category = opts.suggestion.category;
-    this.element.dataset.kind = opts.suggestion.kind;
-    this.element.dataset.shortcutSafe = String(opts.shortcutSafe);
+    this.element.dataset.mode = next.mode;
+    this.element.dataset.suggestionId = s.id;
+    this.element.dataset.suggestionIds = next.ids.join(' ');
+    this.element.dataset.fieldId = next.fieldId;
+    this.element.dataset.category = s.category;
+    this.element.dataset.kind = next.mode === 'sentence' ? 'sentence' : s.kind;
+    this.element.dataset.shortcutSafe = String(next.shortcutSafe);
     // The `hidden` attribute is the fallback visibility switch; it must never linger in popover mode.
     this.element.removeAttribute('hidden');
     if (this.popover) {
@@ -173,9 +236,11 @@ export class SuggestionCard {
         /* not connected or already open: the attribute removal above shows it */
       }
     }
-    this.reposition(opts.anchor);
-    if (opts.focus || keepFocus) this.focus();
-    if (!prev || !sameSuggestion) this.cb.onShown(opts.fieldId, opts.suggestion.id);
+    this.reposition(next.anchor);
+    if (focus || keepFocus) this.focus();
+    // Shown/hidden events per suggestion: ids leaving the card are hidden, ids joining it are shown.
+    if (prev) for (const id of prev.ids) if (!sameField || !next.ids.includes(id)) this.cb.onHidden(prev.fieldId, id);
+    for (const id of next.ids) if (!prev || !sameField || !prev.ids.includes(id)) this.cb.onShown(next.fieldId, id);
   }
 
   hide(): void {
@@ -194,7 +259,7 @@ export class SuggestionCard {
       this.element.setAttribute('hidden', '');
     }
     if (hadFocus) this.restoreFocus();
-    this.cb.onHidden(prev.fieldId, prev.suggestion.id);
+    for (const id of prev.ids) this.cb.onHidden(prev.fieldId, id);
   }
 
   /** Re-place the card against a fresh anchor rect (scroll, resize, zoom). */
@@ -424,14 +489,141 @@ export class SuggestionCard {
     setChildren(this.element, head, title, content, optionsEl, explEl, actions, morePanel, footer);
   }
 
+  private renderSentence(opts: SentenceCardShowOptions): void {
+    const { fieldId, group } = opts;
+    const members = group.members;
+    const ids = members.map((m) => m.id);
+    const hovered = group.hovered;
+    const acceptAll = () => this.cb.onAcceptGroup(fieldId, [...ids]);
+    const dismissAll = () => this.cb.onDismissGroup(fieldId, [...ids]);
+    const categories = new Set(members.map((m) => m.category));
+    const dotCategory = categories.size === 1 ? (members[0]?.category ?? hovered.category) : hovered.category;
+    const allTierA = members.every((m) => m.tier === 'A');
+
+    const head = h(
+      'div',
+      { class: 'jm-card-head', 'data-jm': 'card-head' },
+      categoryDot(dotCategory),
+      h('h2', { class: 'jm-title jm-sentence-title', id: this.titleId, 'data-jm': 'card-title' }, sentenceTitle(members)),
+      allTierA ? h('span', { class: 'jm-chip', 'data-jm': 'card-badge', 'data-tier': 'A' }, 'Auto') : null,
+      hostSafeButton(
+        { class: 'jm-iconbtn jm-sm jm-card-close', 'data-jm': 'card-close', 'aria-label': 'Close', title: 'Close (Esc)', onclick: () => this.cb.onRequestClose() },
+        svgIcon('close', 14),
+      ),
+    );
+
+    // The whole sentence inline: plain text, struck originals, bold replacements. One button: clicking accepts all.
+    const pieces = sentencePieces(group);
+    let result = '';
+    const children: (Node | string)[] = [];
+    for (const piece of pieces) {
+      if (piece.type === 'text') {
+        children.push(piece.text);
+        result += piece.text;
+        continue;
+      }
+      const id = piece.suggestion.id;
+      result += piece.replacement;
+      children.push(
+        h(
+          'span',
+          { class: 'jm-change', 'data-jm': 'sentence-change', 'data-suggestion-id': id, 'data-kind': piece.suggestion.kind },
+          piece.original.length > 0 ? h('s', { class: 'jm-original', 'data-jm': 'sentence-original', 'data-suggestion-id': id }, piece.original) : null,
+          piece.replacement.length > 0 ? h('strong', { class: 'jm-sentence-new', 'data-jm': 'sentence-replacement', 'data-suggestion-id': id }, piece.replacement) : null,
+        ),
+      );
+    }
+    const content = hostSafeButton(
+      {
+        class: 'jm-content jm-sentence',
+        'data-jm': 'sentence-content',
+        'data-kind': 'sentence',
+        title: 'Accept all changes',
+        'aria-label': `Accept ${members.length} changes: ${result.trim()}`,
+        onclick: acceptAll,
+      },
+      children,
+    );
+
+    const morePanel = h('div', { class: 'jm-more-panel', 'data-jm': 'more-panel', role: 'group', 'aria-label': 'More actions', hidden: true });
+    const moreBtn = hostSafeButton(
+      {
+        class: 'jm-iconbtn jm-sm',
+        'data-jm': 'more',
+        'aria-label': 'More',
+        title: 'More',
+        'aria-haspopup': 'true',
+        'aria-expanded': 'false',
+        onclick: () => {
+          this.moreOpen = !this.moreOpen;
+          morePanel.hidden = !this.moreOpen;
+          moreBtn.setAttribute('aria-expanded', String(this.moreOpen));
+          if (this.moreOpen) {
+            const first = focusableWithin(morePanel)[0];
+            (first ?? this.element).focus({ preventScroll: true });
+          }
+          this.reposition();
+        },
+      },
+      svgIcon('more', 16),
+    );
+    morePanel.hidden = !this.moreOpen;
+    moreBtn.setAttribute('aria-expanded', String(this.moreOpen));
+    setChildren(
+      morePanel,
+      hostSafeButton(
+        { class: 'jm-mi', 'data-jm': 'report-incorrect', onclick: () => this.cb.onReportIncorrect(fieldId, hovered.id) },
+        svgIcon('warning', 14),
+        'Report incorrect',
+      ),
+      hostSafeButton(
+        { class: 'jm-mi', 'data-jm': 'mute-host', onclick: () => this.cb.onMuteRule(fieldId, hovered.rule, 'host') },
+        svgIcon('slash', 14),
+        'Turn off suggestions like this on this site',
+      ),
+      hostSafeButton(
+        { class: 'jm-mi', 'data-jm': 'mute-global', onclick: () => this.cb.onMuteRule(fieldId, hovered.rule, 'global') },
+        svgIcon('slash', 14),
+        'Turn off suggestions like this everywhere',
+      ),
+    );
+
+    const actions = h(
+      'div',
+      { class: 'jm-actions', 'data-jm': 'actions' },
+      hostSafeButton(
+        { class: 'jm-primary', 'data-jm': 'accept', 'aria-keyshortcuts': opts.shortcutSafe ? 'Enter' : 'a Enter', title: opts.shortcutSafe ? 'Accept all' : 'Accept all (a)', onclick: acceptAll },
+        'Accept',
+      ),
+      hostSafeButton(
+        { class: 'jm-iconbtn jm-sm', 'data-jm': 'dismiss', 'aria-label': 'Dismiss all', title: opts.shortcutSafe ? 'Dismiss all' : 'Dismiss all (d)', 'aria-keyshortcuts': opts.shortcutSafe ? null : 'd', onclick: dismissAll },
+        svgIcon('trash', 15),
+      ),
+      hostSafeButton(
+        { class: 'jm-textbtn', 'data-jm': 'one-at-a-time', title: 'Review these suggestions one at a time', onclick: () => this.cb.onShowOneAtATime(fieldId, hovered.id) },
+        'Show one at a time',
+      ),
+      h('span', { class: 'jm-spacer' }),
+      moreBtn,
+    );
+
+    const footer = opts.showIntro ? h('div', { class: 'jm-footer', 'data-jm': 'card-footer' }, INTRO_TEXT) : null;
+    setChildren(this.element, head, content, actions, morePanel, footer);
+  }
+
   // ---------------------------------------------------------------------- keyboard
 
   private onKeydown(ev: KeyboardEvent): void {
     if (!this.current || ev.isComposing) return;
     const mod = ev.ctrlKey || ev.metaKey || ev.altKey;
-    const { shortcutSafe, suggestion: s, fieldId } = this.current;
+    const { shortcutSafe, suggestion: s, fieldId, mode, ids } = this.current;
     const target = ev.target as HTMLElement | null;
     const onRoot = target === this.element;
+    const sentence = mode === 'sentence';
+    const acceptCurrent = (): void => {
+      if (sentence) this.cb.onAcceptGroup(fieldId, [...ids]);
+      else this.cb.onAccept(fieldId, s.id);
+    };
     let handled = false;
 
     switch (ev.key) {
@@ -463,21 +655,22 @@ export class SuggestionCard {
         break;
       case 'Enter':
         // Enter on a focused button activates it natively; on the card root it accepts.
-        if (!mod && onRoot && s.kind !== 'flag') {
-          this.cb.onAccept(fieldId, s.id);
+        if (!mod && onRoot && (sentence || s.kind !== 'flag')) {
+          acceptCurrent();
           handled = true;
         }
         break;
       default:
         if (!shortcutSafe && !mod && !ev.shiftKey) {
           const key = ev.key.toLowerCase();
-          if (key === 'a' && s.kind !== 'flag') {
-            this.cb.onAccept(fieldId, s.id);
+          if (key === 'a' && (sentence || s.kind !== 'flag')) {
+            acceptCurrent();
             handled = true;
           } else if (key === 'd') {
-            this.cb.onDismiss(fieldId, s.id);
+            if (sentence) this.cb.onDismissGroup(fieldId, [...ids]);
+            else this.cb.onDismiss(fieldId, s.id);
             handled = true;
-          } else if (/^[1-9]$/.test(key)) {
+          } else if (!sentence && /^[1-9]$/.test(key)) {
             const options = optionList(s);
             const opt = options[Number(key) - 1];
             if (opt) {
@@ -524,6 +717,12 @@ export class SuggestionCard {
 function signatureOf(o: CardShowOptions): string {
   const s = o.suggestion;
   return [s.id, s.stale, s.kind, s.tier, s.title, s.original, s.replacement, s.alternatives.join('\u0001'), s.explanation, s.rule, o.shortcutSafe, o.showIntro].join('\u0002');
+}
+
+function sentenceSignatureOf(o: SentenceCardShowOptions): string {
+  const g = o.group;
+  const members = g.members.map((s) => [s.id, s.category, s.tier, s.kind, s.rule, s.range.start, s.range.end, s.original, s.replacement].join('\u0001'));
+  return ['sentence', g.hovered.id, g.sentence.start, g.sentence.end, g.text, members.join('\u0003'), o.shortcutSafe, o.showIntro].join('\u0002');
 }
 
 /** A card button that keeps the host field's selection (mousedown default prevented) and takes the click. */
