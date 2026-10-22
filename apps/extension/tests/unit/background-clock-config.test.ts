@@ -6,9 +6,10 @@ import { defaultProfile } from '@jammarly/shared/profile';
 import { compareHlc, parseHlc } from '@jammarly/shared/hlc';
 import { createDeviceClock, collectHlcs } from '../../src/background/clock';
 import { computeEffectiveConfig, ensureUserSaltOp, modelsFor, mutedRulesFor } from '../../src/background/config';
-import type { LearnedStateView } from '../../src/background/shared-engine';
+import type { LearnedStateView } from '../../src/background/learning/fold';
+import { statsKey } from '../../src/background/shared-engine';
 
-const NO_LEARNED: LearnedStateView = { ruleStates: {}, promoted: [], manualOff: [] };
+const NO_LEARNED: LearnedStateView = { ruleStates: {}, promoted: new Set() };
 const SESSION_OFF = { hosts: [], fields: [] };
 
 function profileWith(mut: (p: ProfileDocument) => void): ProfileDocument {
@@ -97,12 +98,13 @@ describe('computeEffectiveConfig', () => {
     });
     const learned: LearnedStateView = {
       ruleStates: {
-        wordy_phrase: { state: 'suppressed', eligibleForBulk: false, scope: 'ctx', scopeKey: 'chat', since: '', reprobeStage: 0 },
-        intensifier: { state: 'suppressed', eligibleForBulk: false, scope: 'host', scopeKey: 'mail.google.com', since: '', reprobeStage: 0 },
-        redundancy: { state: 'demoted', eligibleForBulk: false, scope: 'global', scopeKey: '', since: '', reprobeStage: 0 },
+        [statsKey('ctx', 'chat', 'wordy_phrase')]: { state: 'suppressed', eligibleForBulk: false, scope: 'ctx', scopeKey: 'chat', since: '', reprobeStage: 0 },
+        [statsKey('host', 'mail.google.com', 'intensifier')]: { state: 'suppressed', eligibleForBulk: false, scope: 'host', scopeKey: 'mail.google.com', since: '', reprobeStage: 0 },
+        [statsKey('global', '', 'redundancy')]: { state: 'demoted', eligibleForBulk: false, scope: 'global', scopeKey: '', since: '', reprobeStage: 0 },
+        // Core correctness is never learned away: a suppressed correctness rule stays out of mutedRules.
+        [statsKey('global', '', 'spelling')]: { state: 'suppressed', eligibleForBulk: false, scope: 'global', scopeKey: '', since: '', reprobeStage: 0 },
       },
-      promoted: [],
-      manualOff: [],
+      promoted: new Set(),
     };
     const slack = config('app.slack.com', {}, p, learned);
     expect(slack.mutedRules).toEqual(['cliche', 'hedging', 'wordy_phrase']);
@@ -110,6 +112,7 @@ describe('computeEffectiveConfig', () => {
     const gmail = config('mail.google.com', {}, p, learned);
     expect(gmail.mutedRules).toEqual(['hedging', 'intensifier']);
     expect(mutedRulesFor('other.com', 'other', p, learned)).toEqual(['hedging']);
+    expect(config('sub.app.slack.com', {}, p, learned).mutedRules).toContain('cliche'); // "cliche@app.slack.com" covers subdomains
   });
 
   it('exposes only live dictionary values (tombstones excluded)', () => {

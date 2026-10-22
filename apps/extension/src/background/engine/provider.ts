@@ -3,7 +3,7 @@
  * Providers return the raw model output; parsing and anchoring happen in the orchestrator so both providers
  * run through exactly the same validation.
  */
-import type { CheckError, CheckErrorCode, CheckRequest, EngineProvider, TokenUsage } from '@jammarly/shared/types';
+import type { CheckError, CheckErrorCode, CheckRequest, EngineProvider, TokenUsage, WritingContext } from '@jammarly/shared/types';
 import type { SystemBlock } from '../shared-engine';
 import { EngineOutputError } from '../shared-engine';
 import { isAbortError } from '../util';
@@ -20,6 +20,8 @@ export interface ProviderToneInput {
   system: SystemBlock[];
   user: string;
   text: string;
+  /** Writing context of the field; the mock derives its tone from it, the model is told nothing. */
+  context?: WritingContext;
 }
 
 export interface ProviderCallOptions {

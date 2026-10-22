@@ -23,7 +23,7 @@ import type {
 } from '@jammarly/shared/types';
 import { CATEGORIES, PASS_RANK } from '@jammarly/shared/types';
 import type { ProfileDocument, VoiceContext } from '@jammarly/shared/profile';
-import type { LearnedStateView, MaskedBlock } from '../shared-engine';
+import type { MaskedBlock } from '../shared-engine';
 import {
   anchorSuggestions,
   applyLearnedState,
@@ -34,6 +34,8 @@ import {
   effortFor,
   hashText,
   hitsToSuggestions,
+  lintVoiceProfile,
+  orSetLive,
   parseEngineOutput,
   priceForModel,
   PROMPT_VERSION,
@@ -41,8 +43,8 @@ import {
   runRules,
   SCHEMA_VERSION,
   stripUrlsAndCode,
-  toneSummaryFor,
 } from '../shared-engine';
+import type { LearnedStateView } from '../learning/fold';
 import { modelsFor } from '../config';
 import type { BlockCacheEntry, InflightRecord, UsageLedger } from '../storage';
 import { budgetState, wouldExceedBudget } from '../usage';
@@ -50,7 +52,7 @@ import { isAbortError, Semaphore, stableJson } from '../util';
 import type { BlockCache } from './cache';
 import type { Provider } from './provider';
 import { addUsage, checkError, isProviderError, ProviderError, toCheckError, ZERO_USAGE } from './provider';
-import type { ToneRunner } from './tone';
+import { toneSummaryFor, type ToneRunner } from './tone';
 
 export const MAX_BLOCKS_PER_CALL = 4;
 export const MAX_WORDS_PER_CALL = 1200;
@@ -290,17 +292,20 @@ export function createEngine(deps: EngineDeps): Engine {
   });
 
   const finish = (request: CheckRequest, ctx: EngineContext, suggestions: Suggestion[]): Suggestion[] => {
-    const learned = applyLearnedState(suggestions, {
+    // Learned state (ARCHITECTURE §3.7): manual mutes from rules.muted ("<rule>" or "<rule>@<host>") hide a rule
+    // outright; learner suppressions hide everything below the correctness floor; promoted correctness fixes reach
+    // Tier A at confidence >= 0.70. Dismiss-reason overrides were already written to rules.muted by the port hub.
+    const { visible } = applyLearnedState(suggestions, {
       ruleStates: ctx.learned.ruleStates,
       promoted: ctx.learned.promoted,
-      manualOff: ctx.learned.manualOff,
+      manualOff: [],
       host: ctx.host,
       ctx: request.context,
-      mutedRules: ctx.config.mutedRules,
+      mutedRules: orSetLive(ctx.profile.rules.muted),
     });
     const dismissed = deps.dismissed(ctx.docKey);
     const applied = deps.applied(request.fieldId);
-    const filtered = learned.filter((s) => !dismissed.has(s.fingerprint) && !applied.has(s.fingerprint));
+    const filtered = visible.filter((s) => !dismissed.has(s.fingerprint) && !applied.has(s.fingerprint));
     filtered.sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end || a.id.localeCompare(b.id));
     return linkConflicts(filtered.map((s) => ({ ...s, conflictsWith: [] })));
   };
@@ -372,7 +377,8 @@ export function createEngine(deps: EngineDeps): Engine {
     const voiceCtx = ctxToVoice(request.context);
     const voiceProfile = voiceCtx ? profile.voice.profiles[voiceCtx] : undefined;
     const voiceSettings = profile.voice.settings.value;
-    const voiceBlock = voiceSettings.strength > 0 && voiceProfile ? renderVoiceBlock(voiceProfile, voiceSettings) : '';
+    // A profile synced from another device is untrusted input: one that fails the lint is never rendered.
+    const voiceBlock = voiceSettings.strength > 0 && voiceProfile && lintVoiceProfile(voiceProfile, voiceSettings.notes).ok ? renderVoiceBlock(voiceProfile, voiceSettings) : '';
 
     const paragraphs = [...request.blocks].sort((a, b) => a.index - b.index).filter((p) => p.text.trim().length > 0);
     const dirty = request.dirtyBlockHashes === 'all' ? null : new Set(request.dirtyBlockHashes);

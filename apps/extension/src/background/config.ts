@@ -5,10 +5,10 @@
  */
 import type { DeviceSettings, EffectiveConfig, SuggestionCategory, WritingContext, WritingGoals } from '@jammarly/shared/types';
 import { CATEGORIES } from '@jammarly/shared/types';
-import type { ProfileDocument, ProfileOp } from '@jammarly/shared/profile';
+import type { LearnedRuleState, ProfileDocument, ProfileOp } from '@jammarly/shared/profile';
 import { hostContext } from '../content/sites/base';
-import type { LearnedStateView } from './shared-engine';
-import { isSensitiveHost, learnedStateApplies, liveValues } from './shared-engine';
+import type { LearnedStateView } from './learning/fold';
+import { categoryForRule, isSensitiveHost, lookupRuleState, mutedRulesForHost, orSetLive, parseStatsKey } from './shared-engine';
 import type { UsageLedger } from './storage';
 import { budgetState } from './usage';
 import { normalizeHostName, randomHex } from './util';
@@ -34,28 +34,35 @@ export function contextFor(host: string, profile: ProfileDocument): WritingConte
   return hostContext(host);
 }
 
-/** Muted rules for a host: live global ids, live "<rule>@<host>" ids, plus learner suppressions in scope. */
-export function mutedRulesFor(host: string, ctx: WritingContext, profile: ProfileDocument, learned: LearnedStateView): string[] {
+/** Rule ids the learner holds a state for in any scope (probe counters are not states). */
+export function learnedRuleIds(ruleStates: Readonly<Record<string, LearnedRuleState>>): string[] {
   const out = new Set<string>();
-  const normalized = normalizeHostName(host);
-  for (const value of liveValues(profile.rules.muted)) {
-    const at = value.indexOf('@');
-    if (at === -1) out.add(value);
-    else {
-      const scope = value.slice(at + 1);
-      if (scope === host || normalizeHostName(scope) === normalized) out.add(value.slice(0, at));
-    }
+  for (const key of Object.keys(ruleStates)) {
+    const p = parseStatsKey(key);
+    if (p !== undefined && p.scope !== 'probe') out.add(p.rule);
   }
-  for (const [rule, state] of Object.entries(learned.ruleStates)) {
-    if (state.state === 'suppressed' && learnedStateApplies(state, host, ctx)) out.add(rule);
+  return [...out];
+}
+
+/**
+ * Muted rules for a host: live rules.muted entries that apply here (plain ids, "<rule>@<host>" for this host or a
+ * parent domain) plus learner suppressions in scope (host -> ctx -> global). The learner never adds correctness
+ * rules: ARCHITECTURE §3.7 keeps core correctness errors visible, so local rules keep running for them and the
+ * engine hides only their sub-floor suggestions.
+ */
+export function mutedRulesFor(host: string, ctx: WritingContext, profile: ProfileDocument, learned: LearnedStateView): string[] {
+  const out = new Set<string>(mutedRulesForHost(orSetLive(profile.rules.muted), host));
+  for (const rule of learnedRuleIds(learned.ruleStates)) {
+    if (categoryForRule(rule) === 'correctness') continue;
+    if (lookupRuleState(learned.ruleStates, rule, host, ctx)?.state === 'suppressed') out.add(rule);
   }
   return [...out].sort();
 }
 
 export function demotedRulesFor(host: string, ctx: WritingContext, learned: LearnedStateView): string[] {
   const out: string[] = [];
-  for (const [rule, state] of Object.entries(learned.ruleStates)) {
-    if (state.state === 'demoted' && learnedStateApplies(state, host, ctx)) out.push(rule);
+  for (const rule of learnedRuleIds(learned.ruleStates)) {
+    if (lookupRuleState(learned.ruleStates, rule, host, ctx)?.state === 'demoted') out.push(rule);
   }
   return out.sort();
 }
@@ -76,7 +83,7 @@ export function categoriesFor(host: string, profile: ProfileDocument): Record<Su
 
 export function hostDisabled(host: string, profile: ProfileDocument): boolean {
   const normalized = normalizeHostName(host);
-  return liveValues(profile.sites.disabled).some((h) => h === host || normalizeHostName(h) === normalized);
+  return orSetLive(profile.sites.disabled).some((h) => h === host || normalizeHostName(h) === normalized);
 }
 
 export function computeEffectiveConfig(input: ConfigInput): EffectiveConfig {
@@ -109,7 +116,8 @@ export function computeEffectiveConfig(input: ConfigInput): EffectiveConfig {
     checkOptedOutFields: profile.settings.checkOptedOutFields.value,
     mutedRules: mutedRulesFor(host, context, profile, learned),
     demotedRules: demotedRulesFor(host, context, learned),
-    dictionary: liveValues(profile.dictionary).sort(),
+    // orSetLive returns live values in canonical (sorted) order.
+    dictionary: orSetLive(profile.dictionary),
     styleDecisions: { ...profile.settings.styleDecisions.value },
     storeSnippets: privacy.storeSnippets && privacy.learningEnabled && !sensitive,
     engineReady: settings.provider === 'mock' || settings.apiKey.length > 0,

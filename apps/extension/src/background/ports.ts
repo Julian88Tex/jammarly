@@ -22,7 +22,7 @@ import type { CoreWithActivity } from './core';
 import type { EngineMessage } from './engine/orchestrator';
 import { checkError } from './engine/provider';
 import { hostDisabled } from './config';
-import { LEARNER_CONSTANTS, PROMPT_VERSION, isLive } from './shared-engine';
+import { encodeMute, LEARNER_CONSTANTS, orSetHas, PROMPT_VERSION } from './shared-engine';
 import type { InflightRecord } from './storage';
 import { hostOfUrl } from './util';
 
@@ -114,7 +114,7 @@ export function createHub(core: CoreWithActivity, chromeApi: typeof chrome | und
 
   const queueOps = async (ops: ProfileOp[]): Promise<boolean> => {
     const result = await core.applyProfileOps(ops);
-    return result.applied.length > 0;
+    return result.applied > 0;
   };
 
   const engineSend = (owner: ContentPortState | null, panel: Port | null) => (msg: EngineMessage): void => {
@@ -150,9 +150,10 @@ export function createHub(core: CoreWithActivity, chromeApi: typeof chrome | und
     });
   };
 
+  /** Dismiss reasons become manual overrides in rules.muted (ARCHITECTURE §3.7); "Never" on a core correctness rule only stores the dismissal. */
   const mutedOpsForDismiss = (rule: string, host: string, reason: string | undefined): ProfileOp[] => {
-    if (reason === 'not_this_site' && host.length > 0) return [{ op: 'add', path: 'rules.muted', value: `${rule}@${host}`, hlc: '' }];
-    if (reason === 'never' && !LEARNER_CONSTANTS.CORE_CORRECTNESS.includes(rule)) return [{ op: 'add', path: 'rules.muted', value: rule, hlc: '' }];
+    if (reason === 'not_this_site' && host.length > 0) return [{ op: 'add', path: 'rules.muted', value: encodeMute(rule, host), hlc: '' }];
+    if (reason === 'never' && !LEARNER_CONSTANTS.CORE_CORRECTNESS.has(rule)) return [{ op: 'add', path: 'rules.muted', value: encodeMute(rule), hlc: '' }];
     return [];
   };
 
@@ -261,14 +262,14 @@ export function createHub(core: CoreWithActivity, chromeApi: typeof chrome | und
       }
       case 'mute-rule': {
         await core.ready;
-        const value = msg.scope === 'host' ? `${msg.rule}@${state.host}` : msg.rule;
+        const value = msg.scope === 'host' ? encodeMute(msg.rule, state.host) : encodeMute(msg.rule);
         if (await queueOps([{ op: 'add', path: 'rules.muted', value, hlc: '' }])) hub.broadcastConfig(msg.scope === 'host' ? state.host : undefined);
         return;
       }
       case 'toggle-host': {
         await core.ready;
         const profile = core.profile();
-        const live = isLive(profile.sites.disabled, state.host);
+        const live = orSetHas(profile.sites.disabled, state.host);
         const op: ProfileOp | null = msg.enabled ? (live ? { op: 'remove', path: 'sites.disabled', value: state.host, hlc: '' } : null) : live ? null : { op: 'add', path: 'sites.disabled', value: state.host, hlc: '' };
         if (op) await queueOps([op]);
         hub.broadcastConfig(state.host);
@@ -341,7 +342,7 @@ export function createHub(core: CoreWithActivity, chromeApi: typeof chrome | und
       case 'mute-rule': {
         await core.ready;
         const host = msg.host ?? (await hub.activeTabHost(panel.windowId)).host;
-        const value = msg.scope === 'host' && host ? `${msg.rule}@${host}` : msg.rule;
+        const value = msg.scope === 'host' && host ? encodeMute(msg.rule, host) : encodeMute(msg.rule);
         if (await queueOps([{ op: 'add', path: 'rules.muted', value, hlc: '' }])) hub.broadcastConfig(msg.scope === 'host' ? host : undefined);
         return;
       }

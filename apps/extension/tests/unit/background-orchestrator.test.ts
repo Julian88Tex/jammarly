@@ -1,22 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import type { CheckRequest, CheckResult, DeviceSettings, EffectiveConfig, TokenUsage } from '@jammarly/shared/types';
+import type { CheckRequest, CheckResult, DeviceSettings, EffectiveConfig, EngineOutput, TokenUsage } from '@jammarly/shared/types';
 import { DEFAULT_DEVICE_SETTINGS } from '@jammarly/shared/types';
-import type { ProfileDocument } from '@jammarly/shared/profile';
+import type { LearnedRuleState, ProfileDocument } from '@jammarly/shared/profile';
 import { defaultProfile } from '@jammarly/shared/profile';
-import { splitParagraphs } from '@jammarly/shared/text';
+import { applyEdits, splitParagraphs } from '@jammarly/shared/text';
 import { createEngine, computeCacheKey, shardBlocks, type EngineMessage } from '../../src/background/engine/orchestrator';
 import { createBlockCache } from '../../src/background/engine/cache';
-import { createMockProvider } from '../../src/background/engine/mock';
+import { createMockProvider, requestForBlocks } from '../../src/background/engine/mock';
 import type { Provider, ProviderCheckInput, ProviderResult } from '../../src/background/engine/provider';
 import { ProviderError, ZERO_USAGE } from '../../src/background/engine/provider';
 import { createToneRunner } from '../../src/background/engine/tone';
 import { computeEffectiveConfig } from '../../src/background/config';
-import { mockCheck } from '../../src/background/shared-engine';
-import type { LearnedStateView } from '../../src/background/shared-engine';
+import { encodeMute, mockCheck, statsKey } from '../../src/background/shared-engine';
+import type { LearnedStateView } from '../../src/background/learning/fold';
 import type { UsageLedger } from '../../src/background/storage';
 
 const TEXT = 'I just wanted to kind of touch base and see if maybe you could possibly send me the the report when you get a chance.';
 const PARA2 = 'We recieve the files tomorrow and I think that is fine.';
+/** tests/fixtures/textarea.html as the content script serializes it. */
+const TEXTAREA_FIXTURE = 'Their going to the the store tomorow, and i dont think its a good idea.  We was hoping you could of came with us.';
+
+const NO_LEARNED: LearnedStateView = { ruleStates: {}, promoted: new Set() };
+
+function learnedState(state: LearnedRuleState['state'], scope: LearnedRuleState['scope'], scopeKey: string): LearnedRuleState {
+  return { state, eligibleForBulk: false, scope, scopeKey, since: '2026-01-01T00:00:00.000Z', reprobeStage: 0 };
+}
+
+/** What the shared mock engine answers for one provider call (only the requested blocks are dirty). */
+function mockOutputFor(input: ProviderCheckInput): EngineOutput {
+  return mockCheck(requestForBlocks(input.request, input.blockIds)).output;
+}
 
 function request(text: string, overrides: Partial<CheckRequest> = {}): CheckRequest {
   return {
@@ -52,7 +65,7 @@ interface Harness {
 function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>; profile?: ProfileDocument; learned?: LearnedStateView; maxConcurrent?: number; tone?: boolean; keepalive?: { begin(): void; end(): void } } = {}): Harness {
   const settings: DeviceSettings = { ...DEFAULT_DEVICE_SETTINGS, provider: 'mock', ...opts.settings };
   const profile = opts.profile ?? defaultProfile();
-  const learned = opts.learned ?? { ruleStates: {}, promoted: [], manualOff: [] };
+  const learned: LearnedStateView = opts.learned ?? NO_LEARNED;
   const messages: EngineMessage[] = [];
   const dismissed = new Set<string>();
   const applied = new Set<string>();
@@ -121,7 +134,7 @@ function scriptedProvider(script: (call: number, input: ProviderCheckInput) => '
       const verdict = script(calls.length, input);
       if (verdict !== 'ok') throw verdict;
       const usage: TokenUsage = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 };
-      const result: ProviderResult = { output: mockCheck(input.request, input.blockIds), usage, model: o.model, stopReason: 'end_turn' };
+      const result: ProviderResult = { output: mockOutputFor(input), usage, model: o.model, stopReason: 'end_turn' };
       return result;
     },
     async tone() {
@@ -207,58 +220,67 @@ describe('orchestrator with the mock provider', () => {
     expect(h.results[1]!.blocks[0]!.fromCache).toBe(false);
   });
 
-  it('hides learner-suppressed rules in scope and marks demoted ones', async () => {
+  it('hides learner-suppressed rules in scope, marks demoted ones and keeps the correctness floor', async () => {
     const learned: LearnedStateView = {
       ruleStates: {
-        hedging: { state: 'suppressed', eligibleForBulk: false, scope: 'ctx', scopeKey: 'email', since: '', reprobeStage: 0 },
-        cliche: { state: 'demoted', eligibleForBulk: false, scope: 'global', scopeKey: '', since: '', reprobeStage: 0 },
-        intensifier: { state: 'suppressed', eligibleForBulk: false, scope: 'host', scopeKey: 'other.host', since: '', reprobeStage: 0 },
+        [statsKey('ctx', 'email', 'hedging')]: learnedState('suppressed', 'ctx', 'email'),
+        [statsKey('global', '', 'wordy_phrase')]: learnedState('demoted', 'global', ''),
+        [statsKey('host', 'other.host', 'tone_rewrite_confident')]: learnedState('suppressed', 'host', 'other.host'),
+        // A suppressed correctness rule still shows its high-confidence errors: never learned away (§3.7).
+        [statsKey('global', '', 'repeated_word')]: learnedState('suppressed', 'global', ''),
       },
-      promoted: [],
-      manualOff: [],
+      promoted: new Set(),
     };
     const h = harness({ learned });
     await h.check(request(TEXT));
     const rules = h.results[0]!.suggestions.map((s) => s.rule);
     expect(rules).not.toContain('hedging');
-    expect(rules).toContain('intensifier'); // suppression scoped to another host
-    expect(h.results[0]!.suggestions.find((s) => s.rule === 'cliche')!.learnedState).toBe('demoted');
+    expect(rules).toContain('tone_rewrite_confident'); // suppression scoped to another host
+    expect(rules).toContain('repeated_word'); // correctness floor: an error at confidence 0.98
+    expect(h.results[0]!.suggestions.find((s) => s.rule === 'wordy_phrase')!.learnedState).toBe('demoted');
+    expect(h.results[0]!.suggestions.find((s) => s.rule === 'repeated_word')!.learnedState).toBe('active');
   });
 
   it('filters dismissed and applied fingerprints at serve time (the cache keeps them)', async () => {
     const h = harness();
     await h.check(request(TEXT));
     const repeated = h.results[0]!.suggestions.find((s) => s.rule === 'repeated_word')!;
-    const cliche = h.results[0]!.suggestions.find((s) => s.rule === 'cliche')!;
+    const wordy = h.results[0]!.suggestions.find((s) => s.rule === 'wordy_phrase')!;
     h.dismissed.add(repeated.fingerprint);
-    h.applied.add(cliche.fingerprint);
+    h.applied.add(wordy.fingerprint);
     await h.check(request(TEXT, { version: 2 }));
     const rules = h.results[1]!.suggestions.map((s) => s.rule);
     expect(rules).not.toContain('repeated_word');
-    expect(rules).not.toContain('cliche');
+    expect(rules).not.toContain('wordy_phrase');
     expect(h.results[1]!.fromCache).toBe(true);
   });
 
-  it('manually muted rules (global and host-scoped) are removed', async () => {
-    const h = harness({ learned: { ruleStates: {}, promoted: [], manualOff: ['intensifier', 'cliche@mail.google.com', 'hedging@other.com'] } });
+  it('manually muted rules (rules.muted: global, host-scoped and parent-domain) are removed, even above the correctness floor', async () => {
+    const profile = defaultProfile();
+    for (const value of [encodeMute('wordy_phrase'), encodeMute('hedging', 'mail.google.com'), encodeMute('tone_rewrite_confident', 'other.com'), encodeMute('repeated_word', 'google.com')]) {
+      profile.rules.muted.push({ value, addedHlc: '1700000000000-0-test' });
+    }
+    const h = harness({ profile });
     await h.check(request(TEXT));
     const rules = h.results[0]!.suggestions.map((s) => s.rule);
-    expect(rules).not.toContain('intensifier');
-    expect(rules).not.toContain('cliche');
-    expect(rules).toContain('hedging');
+    expect(rules).not.toContain('wordy_phrase');
+    expect(rules).not.toContain('hedging');
+    expect(rules).not.toContain('repeated_word'); // "repeated_word@google.com" covers mail.google.com
+    expect(rules).toContain('tone_rewrite_confident'); // muted on another site only
+    expect(h.configFor('mail.google.com').mutedRules).toEqual(['hedging', 'repeated_word', 'wordy_phrase']);
   });
 
   it('retries a truncated 4-block call as two halves and still emits everything', async () => {
     const provider = scriptedProvider((call, input) => (call === 1 && input.blockIds.length === 4 ? new ProviderError('truncated', 'cut', false) : 'ok'));
     const h = harness({ provider });
-    const text = [TEXT, PARA2, 'This is teh third paragraph.', 'And alot of people write a fourth.'].join('\n');
+    const text = [TEXT, PARA2, 'This is teh third paragraph.', 'And definately people write a fourth.'].join('\n');
     await h.check(request(text));
     expect(provider.calls.map((c) => c.blockIds)).toEqual([['b0', 'b1', 'b2', 'b3'], ['b0', 'b1'], ['b2', 'b3']]);
     const result = h.results[0]!;
     expect(result.error).toBeUndefined();
     expect(result.blocks).toHaveLength(4);
     expect(result.suggestions.some((s) => s.original === 'teh')).toBe(true);
-    expect(result.suggestions.some((s) => s.original === 'alot')).toBe(true);
+    expect(result.suggestions.some((s) => s.original === 'definately')).toBe(true);
     expect(result.usage?.inputTokens).toBe(200);
   });
 
@@ -290,7 +312,7 @@ describe('orchestrator with the mock provider', () => {
         peak = Math.max(peak, active);
         await new Promise((r) => setTimeout(r, 15));
         active--;
-        return { output: mockCheck(input.request, input.blockIds), usage: { ...ZERO_USAGE }, model: o.model, stopReason: 'end_turn' };
+        return { output: mockOutputFor(input), usage: { ...ZERO_USAGE }, model: o.model, stopReason: 'end_turn' };
       },
       async tone() {
         return { output: {}, usage: { ...ZERO_USAGE }, model: 'x', stopReason: null };
@@ -376,13 +398,70 @@ describe('orchestrator with the mock provider', () => {
   it('cache key changes with model, goals, dialect and categories but not with the host', () => {
     const profile = defaultProfile();
     const settings = { ...DEFAULT_DEVICE_SETTINGS, provider: 'mock' as const };
-    const cfg = (host: string) => computeEffectiveConfig({ host, settings, profile, learned: { ruleStates: {}, promoted: [], manualOff: [] }, sessionOff: { hosts: [], fields: [] }, runtimeId: 'id' });
+    const cfg = (host: string) => computeEffectiveConfig({ host, settings, profile, learned: NO_LEARNED, sessionOff: { hosts: [], fields: [] }, runtimeId: 'id' });
     const a = computeCacheKey({ model: 'm', pass: 'deep', config: cfg('a.com'), profile, context: 'email' });
     expect(computeCacheKey({ model: 'm', pass: 'deep', config: cfg('b.com'), profile, context: 'email' })).toBe(a);
     expect(computeCacheKey({ model: 'other', pass: 'deep', config: cfg('a.com'), profile, context: 'email' })).not.toBe(a);
     expect(computeCacheKey({ model: 'm', pass: 'fast', config: cfg('a.com'), profile, context: 'email' })).not.toBe(a);
     expect(computeCacheKey({ model: 'm', pass: 'deep', config: { ...cfg('a.com'), dialect: 'en-GB' }, profile, context: 'email' })).not.toBe(a);
     expect(computeCacheKey({ model: 'm', pass: 'deep', config: { ...cfg('a.com'), categories: { ...cfg('a.com').categories, delivery: false } }, profile, context: 'email' })).not.toBe(a);
+  });
+
+  it('checks the textarea fixture as a deep pass through a fake port context and returns the full mock suggestion set', async () => {
+    const h = harness();
+    await h.check(request(TEXTAREA_FIXTURE, { fieldKind: 'textarea', context: 'doc', host: 'localhost', dirtyBlockHashes: 'all' }));
+    const result = h.results[0]!;
+    expect(result.error).toBeUndefined();
+    expect(result.model).toBe('mock');
+    expect(result.fromCache).toBe(false);
+    const pairs = result.suggestions.map((s) => [s.rule, s.original, s.replacement]);
+    // Anchoring trims the shared word of "the the" -> "the" into a deletion of the duplicate.
+    for (const expected of [
+      ['confusable_word', 'Their', "They're"],
+      ['repeated_word', 'the ', ''],
+      ['spelling', 'tomorow', 'tomorrow'],
+      ['capitalization', 'i', 'I'],
+      ['apostrophe', 'dont', "don't"],
+      ['apostrophe', 'its', "it's"],
+      ['subject_verb_agreement', 'was', 'were'],
+      ['verb_form', 'of came', 'have come'],
+    ]) {
+      expect(pairs).toContainEqual(expected);
+    }
+    for (const s of result.suggestions) expect(TEXTAREA_FIXTURE.slice(s.range.start, s.range.end)).toBe(s.original);
+    expect(result.suggestions.every((s) => s.category === 'correctness' && s.tier === 'A' && s.anchor === 'exact')).toBe(true);
+    const applied = applyEdits(TEXTAREA_FIXTURE, result.suggestions.map((s) => ({ range: s.range, original: s.original, replacement: s.replacement })));
+    expect(applied.skipped).toEqual([]);
+    expect(applied.text).toBe("They're going to the store tomorrow, and I don't think it's a good idea.  We were hoping you could have come with us.");
+  });
+
+  it('promotes a correctness rule to Tier A at confidence >= 0.70 only when the learner promoted it', async () => {
+    const output: EngineOutput = {
+      blocks: [
+        {
+          block_id: 'b0',
+          suggestions: [
+            { id: 's1', category: 'correctness', rule: 'spelling', severity: 'error', kind: 'replace', original: 'recieve', prefix: 'We', suffix: 'the files', occurrence: 1, replacement: 'receive', alternatives: [], explanation: 'Misspelling.', confidence: 0.75, meaning_preserving: true, auto_apply_safe: true },
+          ],
+        },
+      ],
+      document: { tone: [], consistency: [], notes: '' },
+    };
+    const provider: Provider = {
+      kind: 'anthropic',
+      async check(_input, o) {
+        return { output, usage: { ...ZERO_USAGE }, model: o.model, stopReason: 'end_turn' };
+      },
+      async tone() {
+        return { output: {}, usage: { ...ZERO_USAGE }, model: 'x', stopReason: null };
+      },
+    };
+    const plain = harness({ provider });
+    await plain.check(request(PARA2));
+    expect(plain.results[0]!.suggestions.map((s) => [s.rule, s.tier])).toEqual([['spelling', 'B']]);
+    const promoted = harness({ provider, learned: { ruleStates: {}, promoted: new Set(['spelling']) } });
+    await promoted.check(request(PARA2));
+    expect(promoted.results[0]!.suggestions.map((s) => [s.rule, s.tier])).toEqual([['spelling', 'A']]);
   });
 
   it('runs the keepalive only while a model call is in flight', async () => {

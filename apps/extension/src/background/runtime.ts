@@ -10,7 +10,7 @@ import type { ExternalPairMessage, ExternalPairReply } from '@jammarly/shared/ap
 import type { ProfileOp } from '@jammarly/shared/profile';
 import type { CoreWithActivity } from './core';
 import type { Hub } from './ports';
-import { isLive } from './shared-engine';
+import { orSetHas } from './shared-engine';
 import { SyncHttpError } from './sync/client';
 import { isRecord } from './util';
 
@@ -90,7 +90,7 @@ export async function handleRuntimeRequest(req: RuntimeRequest, sender: chrome.r
       const v = validateOps(req.ops);
       if (!v.ok) return fail('invalid-ops', v.message);
       const result = await core.applyProfileOps(v.ops);
-      if (result.applied.length > 0) hub.broadcastConfig();
+      if (result.applied > 0) hub.broadcastConfig();
       if (result.rejected.length > 0) {
         return fail('op_rejected', `${result.rejected.length} of ${v.ops.length} ops rejected: ${result.rejected.map((r) => `${r.op.op} ${'path' in r.op ? r.op.path : r.op.op} (${r.reason})`).join(', ')}`);
       }
@@ -138,7 +138,7 @@ export async function handleRuntimeRequest(req: RuntimeRequest, sender: chrome.r
       return { ok: true, type: 'host-status', host: req.host, enabled: core.configFor(req.host).enabledOnHost };
     case 'set-host-enabled': {
       await core.ready;
-      const live = isLive(core.profile().sites.disabled, req.host);
+      const live = orSetHas(core.profile().sites.disabled, req.host);
       if (req.enabled && live) await core.applyProfileOps([{ op: 'remove', path: 'sites.disabled', value: req.host, hlc: '' }]);
       else if (!req.enabled && !live) await core.applyProfileOps([{ op: 'add', path: 'sites.disabled', value: req.host, hlc: '' }]);
       if (req.enabled) await core.setHostSessionOff(req.host, false);

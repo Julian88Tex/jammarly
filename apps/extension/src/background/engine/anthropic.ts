@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { TokenUsage } from '@jammarly/shared/types';
 import type { SystemBlock } from '../shared-engine';
-import { effortFor, estimateCostUsd, SUGGESTION_OUTPUT_SCHEMA, thinkingFor, TONE_OUTPUT_SCHEMA } from '../shared-engine';
+import { effortFor, estimateCostUsd, SUGGESTION_OUTPUT_SCHEMA, thinkingFor, TONE_MAX_TOKENS, TONE_OUTPUT_SCHEMA } from '../shared-engine';
 import { isAbortError } from '../util';
 import type { KeyTestResult, Provider, ProviderCallOptions, ProviderCheckInput, ProviderResult, ProviderToneInput } from './provider';
 import { ProviderError } from './provider';
@@ -16,7 +16,8 @@ export const KEY_TEST_MODEL = 'claude-haiku-5-5';
 export const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 export const MAX_TOKENS_FAST = 4096;
 export const MAX_TOKENS_DEEP = 16000;
-export const MAX_TOKENS_TONE = 300;
+/** The separate tone call's output budget (ARCHITECTURE §3.3), from the shared tone module. */
+export const MAX_TOKENS_TONE: number = TONE_MAX_TOKENS;
 
 // --- the slice of the SDK the provider uses (so tests can inject a fake) ---------------------------------------
 

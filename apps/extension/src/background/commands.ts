@@ -4,7 +4,7 @@
  */
 import type { CoreWithActivity } from './core';
 import type { Hub } from './ports';
-import { isLive } from './shared-engine';
+import { orSetHas } from './shared-engine';
 import { hostOfUrl } from './util';
 
 export interface CommandDeps {
@@ -25,7 +25,7 @@ export async function handleCommand(command: string, tab: chrome.tabs.Tab | unde
   }
   if (command === 'toggle-on-site') {
     if (host.length === 0) return;
-    const live = isLive(core.profile().sites.disabled, host);
+    const live = orSetHas(core.profile().sites.disabled, host);
     await core.applyProfileOps([live ? { op: 'remove', path: 'sites.disabled', value: host, hlc: '' } : { op: 'add', path: 'sites.disabled', value: host, hlc: '' }]);
     if (live) await core.setHostSessionOff(host, false);
     hub.broadcastConfig(host);

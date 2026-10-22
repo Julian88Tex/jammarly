@@ -16,8 +16,8 @@ import type { Provider } from './engine/provider';
 import { createToneRunner } from './engine/tone';
 import { appOrigin as compiledAppOrigin, extVersion as compiledExtVersion } from './env';
 import { createKeepalive, type Keepalive } from './keepalive';
-import { createLearning, type LearningService } from './learning/fold';
-import type { ApplyOpsResult, LearnedStateView } from './shared-engine';
+import { createLearning, type LearnedStateView, type LearningService } from './learning/fold';
+import type { ApplyOpsResult } from './shared-engine';
 import { applyOps, PROMPT_VERSION } from './shared-engine';
 import type { DismissalEntry, InflightRecord, Store, UsageLedger } from './storage';
 import { createStore, dismissedFingerprints, sweepDismissals, withDismissal } from './storage';
@@ -279,9 +279,13 @@ export function createCore(deps: CoreDeps): Core {
     async applyProfileOps(ops) {
       const stamped = clockOrThrow().stampOps(ops);
       const result = applyOps(store.local.get('profile'), stamped);
-      if (result.applied.length > 0) {
+      if (result.applied > 0) {
         await store.local.set('profile', result.doc);
-        if (store.local.get('settings').pairing !== null) sync.queuePush(result.applied);
+        if (store.local.get('settings').pairing !== null) {
+          // Only the ops the merge accepted travel to the web app (it would refuse the rejected ones too).
+          const rejected = new Set<ProfileOp>(result.rejected.map((r) => r.op));
+          sync.queuePush(stamped.filter((op) => !rejected.has(op)));
+        }
       }
       return result;
     },

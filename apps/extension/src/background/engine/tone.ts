@@ -1,14 +1,16 @@
 /**
  * The separate whole-field tone call (ARCHITECTURE §3.3): runs after a deep pass or a full ('all') check when the
- * field holds >= 150 characters, keyed by the hash of the first 2,500 characters in a small cache, and emits a
- * `tone` port message. With the mock provider the tone comes from the mock engine's document.tone.
+ * field holds >= TONE_MIN_CHARS characters, keyed by the hash of the first 2,500 characters (`toneCacheKey`) in a
+ * small cache, and emits a `tone` port message. The byte-stable system prompt, the cache key, the masked user turn
+ * and the tolerant parser come from `@jammarly/shared/prompts/tone`; with the mock provider the tone comes from
+ * the mock engine's document.tone.
  */
-import type { CheckRequest, ToneAnalysis, TokenUsage } from '@jammarly/shared/types';
-import { buildToneMessages, hashText, parseToneOutput, toneSummaryFor } from '../shared-engine';
-import type { Provider } from './provider';
+import type { CheckRequest, ToneAnalysis, ToneLabel, TokenUsage } from '@jammarly/shared/types';
+import type { SystemBlock } from '../shared-engine';
+import { buildToneMessages, parseToneOutput, toneCacheKey, TONE_MIN_CHARS } from '../shared-engine';
+import type { Provider, ProviderToneInput } from './provider';
 
-export const TONE_MIN_CHARS = 150;
-export const TONE_KEY_CHARS = 2500;
+export { TONE_MIN_CHARS, toneCacheKey };
 
 export interface ToneRunner {
   /** Starts a tone call when the request qualifies; resolves with the tone (or null) once it was emitted. */
@@ -21,8 +23,20 @@ export function qualifiesForTone(request: CheckRequest): boolean {
   return request.text.length >= TONE_MIN_CHARS && (request.pass === 'deep' || request.dirtyBlockHashes === 'all');
 }
 
-export function toneKey(text: string): string {
-  return hashText(text.slice(0, TONE_KEY_CHARS));
+/** The shared tone call in the provider's shape: the system prompt as one cached block, the masked `<text>` turn. */
+export function toneInputFor(request: Pick<CheckRequest, 'text' | 'context' | 'protectedRanges'>): ProviderToneInput {
+  const messages = buildToneMessages(request.text, request.protectedRanges);
+  const system: SystemBlock[] = [{ type: 'text', text: messages.system, cache_control: { type: 'ephemeral' } }];
+  return { system, user: messages.user, text: request.text, context: request.context };
+}
+
+/** A one-sentence summary from labels when the response carried none ("Sounds confident and a little informal."). */
+export function toneSummaryFor(labels: readonly ToneLabel[]): string {
+  if (labels.length === 0) return '';
+  const parts = labels.map((l) => (l.strength === 'slight' ? `a little ${l.label}` : l.strength === 'strong' ? `very ${l.label}` : l.label));
+  const joined = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  const sentence = `Sounds ${joined}.`;
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
 export function createToneRunner(opts: { cacheMax?: number } = {}): ToneRunner {
@@ -50,7 +64,7 @@ export function createToneRunner(opts: { cacheMax?: number } = {}): ToneRunner {
     },
     async maybeRun(request, run) {
       if (!qualifiesForTone(request)) return null;
-      const key = toneKey(request.text);
+      const key = toneCacheKey(request.text);
       const cached = cache.get(key);
       if (cached) {
         run.send(cached);
@@ -60,8 +74,7 @@ export function createToneRunner(opts: { cacheMax?: number } = {}): ToneRunner {
       const controller = new AbortController();
       inflight.set(request.fieldId, controller);
       try {
-        const messages = buildToneMessages(request.text);
-        const result = await run.provider.tone({ ...messages, text: request.text }, { model: run.model, signal: controller.signal });
+        const result = await run.provider.tone(toneInputFor(request), { model: run.model, signal: controller.signal });
         run.onUsage?.(result.usage);
         const tone = parseToneOutput(result.output);
         if (tone.labels.length === 0) return null;
