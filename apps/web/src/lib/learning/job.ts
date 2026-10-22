@@ -29,6 +29,7 @@ import {
   type VoiceDecisionInput,
 } from '@jammarly/shared/prompts';
 import { countWords } from '@jammarly/shared/text';
+import { getDeadline } from '@vercel/functions';
 import { isNotModified } from '../blob';
 import { purgeBefore, readEventsSince, readSamplesSince } from '../events';
 import { getServerApiKey } from '../server-key';
@@ -127,9 +128,7 @@ export async function latestRunStatus(): Promise<LearningRunStatus | null> {
 
 function defaultDeadline(): number | null {
   try {
-    // Imported lazily so the shared module stays side-effect free in tests.
-    const mod = require('@vercel/functions') as { getDeadline?: () => Date | undefined };
-    const d = mod.getDeadline?.();
+    const d = getDeadline();
     return d === undefined ? null : d.getTime();
   } catch {
     return null;

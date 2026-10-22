@@ -12,10 +12,11 @@ export const LoginSchema = z.object({ password: z.string().min(1).max(1024) });
 
 export const ServerKeySchema = z.object({ apiKey: z.string().min(20).max(256) });
 
+/** Ops are validated individually (allowlist, clock skew, value schemas) by validateOps in ./store. */
 export const ProfileOpsSchema = z.object({
   baseVersion: z.number().int().min(0),
   ops: z.array(z.unknown()).min(1).max(200),
-}) satisfies z.ZodType<ProfileOpsRequest>;
+}) satisfies z.ZodType<{ baseVersion: ProfileOpsRequest['baseVersion']; ops: unknown[] }>;
 
 export const LearningRunSchema = z.object({
   contexts: z.array(VoiceContextSchema).min(1).max(2).optional(),
