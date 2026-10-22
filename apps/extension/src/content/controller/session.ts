@@ -355,6 +355,9 @@ export class FieldSession {
       case 'dismiss-all':
         this.dismissAll(action.category);
         return;
+      case 'set-field-enabled':
+        this.setFieldEnabled(action.enabled);
+        return;
       default:
         return;
     }

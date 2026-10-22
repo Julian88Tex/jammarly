@@ -427,7 +427,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   fastModel: 'claude-haiku-5-5',
   apiKey: '',
   debounceMs: 700,
-  showFloatingButton: true,
+  showFloatingButton: false,
   showUnderlines: true,
   colorblindMode: false,
   gdocsInline: 'auto',
@@ -586,7 +586,9 @@ export type PanelAction =
   | { type: 'undo'; fieldId: string; transactionId?: string }
   | { type: 'revert'; fieldId: string; suggestionId: string }
   /** Grammarly's per-category trash: dismiss every pending suggestion of one category in the field. */
-  | { type: 'dismiss-all'; fieldId: string; category: SuggestionCategory };
+  | { type: 'dismiss-all'; fieldId: string; category: SuggestionCategory }
+  /** Turns checking off (or back on) for one field, like the floating button's "Turn off this field". */
+  | { type: 'set-field-enabled'; fieldId: string; enabled: boolean };
 
 // ---------------------------------------------------------------------------
 // Request/response messaging (options, popup, content click handlers -> worker) via chrome.runtime.sendMessage.

@@ -102,10 +102,23 @@ export function mapAnthropicError(err: unknown, nowMs = Date.now()): ProviderErr
   const status = typeof e.status === 'number' ? e.status : undefined;
   if (status === 401 || name === 'AuthenticationError') return new ProviderError('auth', 'Anthropic rejected the API key.', false);
   if (status === 403 || name === 'PermissionDeniedError') return new ProviderError('auth', 'This API key may not use this model.', false);
+  // A key created outside a workspace (or for another org) fails every call with a 400 about its scope.
+  if (status === 400 && /not scoped to a workspace|api key|x-api-key|organization/i.test(`${message} ${body}`)) {
+    return new ProviderError('auth', 'This API key cannot be used here. Create a new key inside a workspace at console.anthropic.com, then paste it in Settings.', false);
+  }
   if (status === 429 || name === 'RateLimitError') {
     return new ProviderError('rate-limit', 'Rate limited by Anthropic.', true, parseRetryAfter(headerValue(e.headers, 'retry-after'), nowMs));
   }
-  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError' || err instanceof TypeError || /fetch failed|network|Failed to fetch/i.test(message)) {
+  // The SDK's connection errors do not set `name`; recognise them by class name and by their fixed messages.
+  const ctorName = typeof err === 'object' && err !== null ? (err.constructor as { name?: string } | undefined)?.name ?? '' : '';
+  if (
+    name === 'APIConnectionError' ||
+    name === 'APIConnectionTimeoutError' ||
+    ctorName === 'APIConnectionError' ||
+    ctorName === 'APIConnectionTimeoutError' ||
+    err instanceof TypeError ||
+    /^Connection error|Request timed out|fetch failed|network|Failed to fetch/i.test(message)
+  ) {
     return new ProviderError('network', "Couldn't reach Anthropic.", true);
   }
   if (status !== undefined && status >= 500) return new ProviderError('unknown', `Anthropic returned ${status}.`, true);

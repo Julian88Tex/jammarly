@@ -287,3 +287,51 @@ describe('adversarial', () => {
 // Keep the type import used in a way tsc is happy with (documenting the settings shape under test).
 const _settingsShape: PublicDeviceSettings = fakeSettings();
 void _settingsShape;
+
+describe('popup field actions (moved from the floating button)', () => {
+  function rowByKey(key: string): HTMLButtonElement {
+    const el = root.querySelector<HTMLButtonElement>(`[data-focus-key="${key}"]`);
+    if (!el) throw new Error(`no row ${key}`);
+    return el;
+  }
+
+  it('shows bulk accept counts and sends accept-all for the focused field, then closes', async () => {
+    {
+      await mount();
+      const style = { ...suggestionStub('s1', 'clarity'), tier: 'B' as const, range: { start: 6, end: 9 }, highlight: { start: 6, end: 9 } };
+      mock.ports[0]!.emit({ type: 'field-state', state: field({ suggestions: [suggestionStub('g1', 'correctness'), style] }) });
+      await flush();
+      expect(rowByKey('accept-grammar').textContent).toContain('1');
+      expect(rowByKey('accept-style').textContent).toContain('1');
+      expect(rowByKey('accept-all').textContent).toContain('2');
+      rowByKey('accept-grammar').click();
+      expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'accept-all', fieldId: 'f1', scope: { group: 'grammar' } } });
+      await new Promise((r) => setTimeout(r, 120));
+      expect(closed).toBe(1);
+    }
+  });
+
+  it('disables bulk rows when there is nothing to accept and offers check now and the field switch', async () => {
+    await mount();
+    mock.ports[0]!.emit({ type: 'field-state', state: field({ status: 'clean', suggestions: [] }) });
+    await flush();
+    expect(rowByKey('accept-all').disabled).toBe(true);
+    expect(root.querySelector('[data-focus-key="undo"]')).toBeNull();
+    rowByKey('recheck').click();
+    expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'recheck', fieldId: 'f1' } });
+    rowByKey('toggle-field').click();
+    expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'set-field-enabled', fieldId: 'f1', enabled: false } });
+    expect(closed).toBe(0);
+  });
+
+  it('offers undo when a transaction exists and turning the field back on when it is off', async () => {
+    await mount();
+    mock.ports[0]!.emit({ type: 'field-state', state: field({ status: 'off', undoAvailable: 1 }) });
+    await flush();
+    rowByKey('undo').click();
+    expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'undo', fieldId: 'f1' } });
+    expect(rowByKey('toggle-field').textContent).toContain('Turn on');
+    rowByKey('toggle-field').click();
+    expect(mock.ports[0]!.sent.at(-1)).toEqual({ type: 'panel-action', action: { type: 'set-field-enabled', fieldId: 'f1', enabled: true } });
+  });
+});

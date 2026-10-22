@@ -93,6 +93,17 @@ describe('anthropic provider: error mapping', () => {
     expect(e.retryable).toBe(false);
   });
 
+  it('maps a 400 about the key not being scoped to a workspace to auth with a fix-it message', () => {
+    const e = mapAnthropicError(sdkError('BadRequestError', 400, { message: '400 {"type":"error","error":{"type":"invalid_request_error","message":"This API key is not scoped to a workspace."}}' }));
+    expect(e.code).toBe('auth');
+    expect(e.retryable).toBe(false);
+    expect(e.message).toMatch(/workspace/);
+  });
+
+  it('keeps other 400s as unknown', () => {
+    expect(mapAnthropicError(sdkError('BadRequestError', 400, { message: 'max_tokens: too large' })).code).toBe('unknown');
+  });
+
   it('maps 429 to rate-limit with retryAfterMs from the header (seconds and HTTP date)', () => {
     const now = Date.parse('2026-10-21T12:00:00Z');
     const e = mapAnthropicError(sdkError('RateLimitError', 429, { headers: new Headers({ 'retry-after': '7' }) }), now);

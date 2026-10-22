@@ -3,7 +3,7 @@
  * review panel and settings. Everything comes from the worker (RuntimeRequests plus a short-lived panel port for
  * the field list); the popup never touches storage.
  */
-import type { EffectiveConfig, FieldState, PublicDeviceSettings, SyncState, UsageTotals } from '@jammarly/shared/types';
+import type { AcceptGroup, EffectiveConfig, FieldState, PanelAction, PublicDeviceSettings, SyncState, UsageTotals } from '@jammarly/shared/types';
 import { CATEGORIES } from '@jammarly/shared/types';
 import { chromeApi, openOptionsPage } from '../common/env';
 import { h, preserveFocus, replaceChildren } from '../common/dom';
@@ -14,6 +14,7 @@ import { connectPanelPort, type PanelPort } from '../common/port';
 import { describeFailure, pick, request } from '../common/rpc';
 import { createStore, type Store } from '../common/store';
 import { CATEGORY_LABELS, watchTheme } from '../common/theme';
+import { acceptAllCounts } from '../../content/controller/store';
 import { button, categoryDot, createToastHost, switchControl, type ToastHandle } from '../common/ui';
 
 export interface PopupState {
@@ -35,6 +36,11 @@ export interface PopupActions {
   setEnabled(on: boolean): Promise<void>;
   setHostEnabled(on: boolean): Promise<void>;
   openPanel(): Promise<void>;
+  /** The floating button's menu, moved here: bulk accept, undo, re-check and the per-field switch. */
+  acceptAll(group: AcceptGroup | 'all'): void;
+  undo(): void;
+  recheck(): void;
+  setFieldEnabled(on: boolean): void;
   openSettings(): void;
   finishSetup(): void;
   reload(): Promise<void>;
@@ -132,6 +138,16 @@ export function mountPopup(root: HTMLElement, opts: { closeWindow?: () => void }
     }));
   }
 
+  /** Sends an action to the field's content script; bulk edits close the popup so the page gets focus back. */
+  function sendFieldAction(action: PanelAction, close: boolean): void {
+    if (port.status !== 'open') {
+      toast.show('Jammarly is reconnecting. Try again in a moment.', { tone: 'error' });
+      return;
+    }
+    port.send({ type: 'panel-action', action });
+    if (close) window.setTimeout(closeWindow, 60);
+  }
+
   const actions: PopupActions = {
     async setEnabled(on) {
       store.update((s) => (s.settings ? { ...s, settings: { ...s.settings, enabled: on } } : s));
@@ -166,6 +182,27 @@ export function mountPopup(root: HTMLElement, opts: { closeWindow?: () => void }
         return;
       }
       closeWindow();
+    },
+    acceptAll(group) {
+      const field = store.get().field;
+      if (!field) return;
+      sendFieldAction({ type: 'accept-all', fieldId: field.fieldId, scope: { group } }, true);
+    },
+    undo() {
+      const field = store.get().field;
+      if (!field || field.undoAvailable === 0) return;
+      sendFieldAction({ type: 'undo', fieldId: field.fieldId }, false);
+    },
+    recheck() {
+      const field = store.get().field;
+      if (!field) return;
+      sendFieldAction({ type: 'recheck', fieldId: field.fieldId }, false);
+      toast.show('Checking again…');
+    },
+    setFieldEnabled(on) {
+      const field = store.get().field;
+      if (!field) return;
+      sendFieldAction({ type: 'set-field-enabled', fieldId: field.fieldId, enabled: on }, false);
     },
     openSettings() {
       void openOptionsPage();
@@ -283,6 +320,8 @@ function renderPopup(root: HTMLElement, state: PopupState, actions: PopupActions
   }
 
   rows.push(renderField(state));
+  const fieldActions = renderFieldActions(state, actions);
+  if (fieldActions) rows.push(fieldActions);
 
   rows.push(
     h(
@@ -318,5 +357,35 @@ function renderField(state: PopupState): HTMLElement {
       }),
     ),
     h('div', { class: 'jm-field-sub' }, plural(field.wordCount, 'word'), state.fieldsInTab > 1 ? ` · ${state.fieldsInTab} fields on this page` : ''),
+  );
+}
+
+/** Grammarly's floating-button menu, as rows in the popup. Null when no field is focused. */
+function renderFieldActions(state: PopupState, actions: PopupActions): HTMLElement | null {
+  const field = state.field;
+  if (!field || field.status === 'unsupported') return null;
+  const off = field.status === 'off';
+  const counts = acceptAllCounts(field.suggestions);
+  const everything = counts.grammar + counts.style;
+  const disabled = off || state.loading;
+  const row = (label: string, count: number | null, key: string, onClick: () => void, opts: { icon?: Parameters<typeof icon>[0]; disabled?: boolean; primary?: boolean } = {}): HTMLElement =>
+    h(
+      'button',
+      { type: 'button', class: ['jm-action-row', opts.primary ? 'is-primary' : null], disabled: opts.disabled === true, dataset: { focusKey: key }, onclick: onClick },
+      opts.icon ? icon(opts.icon) : h('span', { class: 'jm-action-spacer' }),
+      h('span', { class: 'jm-action-label' }, label),
+      count === null ? null : h('span', { class: ['jm-action-count', count === 0 ? 'is-zero' : null] }, String(count)),
+    );
+  return h(
+    'div',
+    { class: 'jm-action-list', role: 'group', 'aria-label': 'Actions for this field' },
+    row('Accept all grammar', counts.grammar, 'accept-grammar', () => actions.acceptAll('grammar'), { icon: 'check', disabled: disabled || counts.grammar === 0 }),
+    row('Accept all style and tone', counts.style, 'accept-style', () => actions.acceptAll('style'), { icon: 'sparkle', disabled: disabled || counts.style === 0 }),
+    row('Accept everything', everything, 'accept-all', () => actions.acceptAll('all'), { icon: 'check', disabled: disabled || everything === 0, primary: everything > 0 }),
+    counts.rewrites > 0 ? h('div', { class: 'jm-action-note' }, `${plural(counts.rewrites, 'rewrite')} need your choice in the review panel.`) : null,
+    h('div', { class: 'jm-action-divider' }),
+    field.undoAvailable > 0 ? row('Undo last change', null, 'undo', () => actions.undo(), { icon: 'undo' }) : null,
+    row('Check now', null, 'recheck', () => actions.recheck(), { icon: 'refresh', disabled }),
+    row(off ? 'Turn on for this field' : 'Turn off for this field', null, 'toggle-field', () => actions.setFieldEnabled(off), {}),
   );
 }

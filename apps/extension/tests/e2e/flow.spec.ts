@@ -33,7 +33,7 @@ async function seed(context: import('@playwright/test').BrowserContext, extensio
   await page.goto(`chrome-extension://${id}/sidepanel/sidepanel.html`);
   await page.evaluate(
     (s) => new Promise<void>((resolve) => chrome.storage.local.set(s, () => resolve())),
-    { settings: { provider: 'mock', apiKey: '', debounceMs: 300 }, profile: CONSENTED_PROFILE },
+    { settings: { provider: 'mock', apiKey: '', debounceMs: 300, showFloatingButton: true }, profile: CONSENTED_PROFILE },
   );
   await page.waitForTimeout(300);
   await page.close();
@@ -112,5 +112,54 @@ test.describe('in-page flow (mock engine)', () => {
 
     await toast.locator('[data-jm="toast-undo"]').click();
     await expect.poll(async () => ta.inputValue()).toBe(before);
+  });
+  test('popup-style panel actions accept everything and turn the field off without the floating button', async ({ context, extensionId, fixtureUrl }) => {
+    const id = PINNED_ID || extensionId;
+    const setup = await context.newPage();
+    await setup.goto(`chrome-extension://${id}/sidepanel/sidepanel.html`);
+    await setup.evaluate(
+      (s) => new Promise<void>((resolve) => chrome.storage.local.set(s, () => resolve())),
+      { settings: { provider: 'mock', apiKey: '', debounceMs: 300, showFloatingButton: false }, profile: CONSENTED_PROFILE },
+    );
+    await setup.waitForTimeout(300);
+
+    const page = await context.newPage();
+    await page.goto(fixtureUrl('textarea.html'));
+    const ta = page.locator('#main');
+    await ta.click();
+    await page.keyboard.press('End');
+    const underlines = shadow(page).locator('[data-jm="underline"]');
+    await expect.poll(async () => underlines.count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+    await expect(shadow(page).locator('[data-jm="button"]')).toBeHidden();
+    const before = await ta.inputValue();
+
+    // The popup talks to the worker over the panel port; drive the same messages from an extension page.
+    const send = (action: Record<string, unknown>) =>
+      setup.evaluate(
+        (src) =>
+          new Promise<void>((resolve, reject) => {
+            const port = chrome.runtime.connect({ name: 'jammarly-sidepanel' });
+            const timer = setTimeout(() => reject(new Error('no fields message')), 5000);
+            port.onMessage.addListener((msg: { type: string; fields?: { fieldId: string; active: boolean }[] }) => {
+              if (msg.type !== 'fields' || !msg.fields?.length) return;
+              clearTimeout(timer);
+              const fieldId = msg.fields[0]!.fieldId;
+              port.postMessage({ type: 'panel-action', action: { ...src, fieldId } });
+              setTimeout(() => {
+                port.disconnect();
+                resolve();
+              }, 200);
+            });
+            port.postMessage({ type: 'hello', role: 'sidepanel' });
+          }),
+        action,
+      );
+
+    await send({ type: 'accept-all', scope: { group: 'all' } });
+    await expect.poll(async () => ta.inputValue(), { timeout: 10_000 }).not.toContain('the the');
+    expect(await ta.inputValue()).not.toBe(before);
+
+    await send({ type: 'set-field-enabled', enabled: false });
+    await expect.poll(async () => underlines.count(), { timeout: 5_000 }).toBe(0);
   });
 });
