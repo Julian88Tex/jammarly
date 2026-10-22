@@ -10,7 +10,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  chromeMock.restore?.();
+  chromeMock.uninstall();
 });
 
 const TEXT = 'Their going to the store tomorow and i think its fine.';
