@@ -1,7 +1,8 @@
 /**
  * Rule `confusable_word`, high-precision patterns only: modal + "of" → "have", "alot", "apart of",
  * sentence-initial "your welcome", and "then" for "than" after "more X" / "rather" / "other".
- * its/it's, their/there and affect/effect are deliberately left to the model.
+ * its/it's, your/you're, their/there/they're, affect/effect and the other pairs live in word-choice.ts, where each
+ * fires only when the neighbouring words settle the choice; everything else is left to the model.
  */
 import type { RuleContext } from './context';
 import { isLetter, isWs, matchCase } from './context';

@@ -1,4 +1,9 @@
-/** Engine-contract rule ids implemented locally. */
+import type { SuggestionCategory } from '../types';
+
+/**
+ * Engine-contract rule ids implemented locally. The names are the engine vocabulary (prompts/vocabulary.ts), so a
+ * rule the user mutes or the learner demotes is the same rule whether the local engine or Claude raised it.
+ */
 export const RULE_IDS = [
   'spacing',
   'repeated_word',
@@ -10,13 +15,38 @@ export const RULE_IDS = [
   'consistency_hyphenation',
   'consistency_spelling_variant',
   'consistency_serial_comma',
+  'spelling',
+  'apostrophe',
+  'comma',
+  'hyphen_dash',
+  'subject_verb_agreement',
+  'verb_form',
+  'pronoun_case',
+  'noun_number',
+  'wordy_phrase',
+  'redundancy',
+  'intensifier',
+  'cliche',
+  'hedging',
+  'comma_splice',
+  'extra_word',
+  'missing_word',
 ] as const;
 
 export type RuleId = (typeof RULE_IDS)[number];
 
+/** Category per rule id (the engine vocabulary's grouping); every id not listed here is correctness. */
+export const RULE_CATEGORIES: Record<string, SuggestionCategory> = {
+  wordy_phrase: 'clarity',
+  redundancy: 'clarity',
+  intensifier: 'engagement',
+  cliche: 'engagement',
+  hedging: 'delivery',
+};
+
 /**
  * Card titles. Keys are rule ids (the generic title) and `rule.variant` sub-keys for the specific
- * check that fired; every hit's `title` is one of these values.
+ * check that fired; every hit's `title` is one of these values. Plain words only, no em dashes.
  */
 export const RULE_TITLES: Record<string, string> = {
   spacing: 'Fix the spacing',
@@ -24,10 +54,14 @@ export const RULE_TITLES: Record<string, string> = {
   'spacing.before_punctuation': 'Remove the space before the punctuation',
   'spacing.missing_after_punctuation': 'Add a space after the punctuation',
   'spacing.trailing_whitespace': 'Remove the trailing whitespace',
+  'spacing.number_unit': 'Add a space before the unit',
+  'spacing.symbol': 'Remove the space next to the symbol',
   repeated_word: 'Remove the repeated word',
   capitalization: 'Capitalize the first word',
   'capitalization.sentence_start': 'Capitalize the first word',
   'capitalization.lone_i': "Capitalize 'I'",
+  'capitalization.proper_noun': 'Capitalize the proper noun',
+  'capitalization.sign_off': 'Lowercase the sign-off',
   article: 'Fix the article',
   'article.a_to_an': "Use 'an' before a vowel sound",
   'article.an_to_a': "Use 'a' before a consonant sound",
@@ -37,9 +71,41 @@ export const RULE_TITLES: Record<string, string> = {
   'confusable_word.apart_of': "Use 'a part of'",
   'confusable_word.your_welcome': "Use 'you're welcome'",
   'confusable_word.then_than': "Use 'than' instead of 'then'",
+  'confusable_word.than_then': "Use 'then' instead of 'than'",
+  'confusable_word.its': "Use 'it's' or 'its' correctly",
+  'confusable_word.your': "Use 'you're' or 'your' correctly",
+  'confusable_word.their': "Use 'their', 'there' or 'they're' correctly",
+  'confusable_word.phrase': 'Fix the expression',
+  'confusable_word.phrasal_verb': 'Split the verb phrase',
+  'confusable_word.fewer': "Use 'fewer' with countable nouns",
   terminal_punctuation: 'Remove the extra punctuation',
+  'terminal_punctuation.question_mark': 'Use a question mark',
   consistency_quote_style: 'Make the quotes consistent',
   consistency_hyphenation: 'Make the dashes consistent',
   consistency_spelling_variant: 'Use one spelling variant',
   consistency_serial_comma: 'Make the serial commas consistent',
+  spelling: 'Correct the spelling',
+  apostrophe: 'Add the apostrophe',
+  'apostrophe.remove': 'Remove the apostrophe',
+  comma: 'Add a comma',
+  'comma.greeting': 'Add a comma after the greeting',
+  'comma.introductory': 'Add a comma after the introductory word',
+  'comma.vocative': 'Add a comma before the name',
+  'comma.compound': 'Add a comma before the conjunction',
+  'comma.clause': 'Add a comma after the opening clause',
+  'comma.abbreviation': 'Add a comma after the abbreviation',
+  hyphen_dash: 'Add a hyphen',
+  subject_verb_agreement: 'Make the subject and verb agree',
+  verb_form: 'Fix the verb form',
+  pronoun_case: 'Fix the pronoun',
+  noun_number: 'Use the plural form',
+  wordy_phrase: 'Shorten the wordy phrase',
+  redundancy: 'Remove the redundancy',
+  intensifier: 'Use a stronger word',
+  cliche: 'Replace the cliché',
+  hedging: 'Sound more confident',
+  comma_splice: 'Fix the comma splice',
+  extra_word: 'Remove the extra word',
+  missing_word: 'Add the missing word',
+  'terminal_punctuation.missing_period': 'Add a period',
 };

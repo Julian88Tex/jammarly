@@ -3,6 +3,7 @@ import type { Dialect, Paragraph, Suggestion, TextRange } from '../src/types';
 import { hashText, normalizeForMatch, splitParagraphs, stripUrlsAndCode } from '../src/text';
 import { createContext, finalizeHits } from '../src/rules/context';
 import {
+  RULE_CATEGORIES,
   RULE_IDS,
   RULE_TITLES,
   articleFor,
@@ -60,7 +61,7 @@ function assertHitInvariants(text: string, hits: RuleHit[], masked: TextRange[] 
     expect(RULE_IDS).toContain(h.rule);
     expect(h.confidence).toBeGreaterThan(0);
     expect(h.confidence).toBeLessThanOrEqual(1);
-    expect(h.category).toBe('correctness');
+    expect(h.category).toBe(RULE_CATEGORIES[h.rule] ?? 'correctness');
     expect(h.range.start).toBeGreaterThanOrEqual(prev);
     prev = h.range.start;
     for (const m of masked) {
@@ -553,7 +554,7 @@ describe('confusable_word', () => {
     ['Thanks! your welcome', ['your→you\'re']],
     ['Your welcome gift is here.', []],
     ['I appreciate your welcome.', []],
-    ['Your welcome to join.', []],
+    ['Your welcome to join.', ['Your→You\'re']],
     ['Your welcome, John.', ['Your→You\'re']],
     ['I would rather then not.', ['then→than']],
     ['More often then not.', ['then→than']],
@@ -564,14 +565,15 @@ describe('confusable_word', () => {
     ['Rather then, we waited.', []],
     ['First this, then that.', []],
     ['Better then nothing.', []],
-    ["It's hotter than ever and better then before.", []],
+    ["It's hotter than ever and better then before.", ['then→than']],
   ])('%j', (text, expected) => {
     expect(fixes(text, 'confusable_word')).toEqual(expected);
   });
 
-  it('never flags its/it\'s, their/there or affect/effect', () => {
+  it('flags its/it\'s and their/there only where the next words settle it, and leaves the ambiguous ones to the model', () => {
     const text = "Its a nice day and it's cat is there. There going to effect the affect. Their is a problem.";
-    expect(only(text, 'confusable_word')).toEqual([]);
+    // "Its a" and "Their is" are certain; "and it's cat", "There going" and "effect the affect" are not.
+    expect(fixes(text, 'confusable_word')).toEqual(["Its→It's", 'Their→There']);
   });
 
   it('confidence and tiering follow the contract', () => {
@@ -1558,7 +1560,7 @@ describe('adversarial', () => {
             expect(h.autoApplySafe ? h.confidence >= 0.8 : true).toBe(true);
           }
           for (const s of suggestions) {
-            expect(s.tier).toBe(s.autoApplySafe && s.category === 'correctness' ? 'A' : 'B');
+            expect(s.tier).toBe(!s.meaningPreserving ? 'C' : s.autoApplySafe && s.category === 'correctness' ? 'A' : 'B');
             expect(s.highlight.start).toBeLessThanOrEqual(s.range.start);
             expect(s.highlight.end).toBeGreaterThanOrEqual(s.range.end);
             expect(s.highlight.start).toBeGreaterThanOrEqual(0);
@@ -1660,9 +1662,11 @@ describe('adversarial', () => {
         }
         expect(passes, JSON.stringify(start)).toBeLessThanOrEqual(3);
         expect(hits.filter((h) => h.autoApplySafe)).toEqual([]);
-        // Whatever is left is a judgment call that was already there before the mechanical fixes were applied
-        // (case-insensitively: capitalization may have re-cased the word a style hit sits on).
-        for (const h of hits) expect(judgmentBefore.has(key(h)), `${JSON.stringify(start)} → ${key(h)}`).toBe(true);
+        // Whatever correctness issue is left is a judgment call that was already there before the mechanical fixes
+        // were applied (case-insensitively: capitalization may have re-cased the word a style hit sits on). Style
+        // suggestions may appear once a word is spelled right ("Alot of people" -> "A lot of people" -> "many people"),
+        // exactly as they would for text typed correctly in the first place.
+        for (const h of hits) if (h.category === 'correctness') expect(judgmentBefore.has(key(h)), `${JSON.stringify(start)} → ${key(h)}`).toBe(true);
       }
     });
 

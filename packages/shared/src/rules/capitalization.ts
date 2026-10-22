@@ -8,6 +8,8 @@ import { LABEL_NOUNS, isAbbreviationBefore, isDigit, isLetter, isLower, isUpper 
 // The run-start lookbehind keeps a long "!!!!" or "....." run linear (see spacing.ts).
 const SENTENCE_BREAK_RE = /(?<![.!?])([.!?]+)(["'\u201d\u2019)\]]*)(\s+)(?=\p{Ll})/gu;
 const WORD_TAIL_RE = /^[\p{L}\p{N}'’-]*/u;
+/** A line break whose next line starts (after indentation) with a lowercase letter; group 1 is the previous line. */
+const PARAGRAPH_START_RE = /(?<=^|\n)([^\n]*)\r?\n[ \t]*(?=\p{Ll})/gu;
 const CAMEL_RE = /\p{Ll}\p{Lu}/u;
 const HAS_DIGIT_RE = /\p{N}/u;
 const LONE_I_RE = /(?<![\p{L}\p{N}'’.\-_])i(?:(['’])(m|ve|ll|d))?(?![\p{L}\p{N}'’.\-_])/gu;
@@ -88,6 +90,20 @@ export function capitalizationRule(ctx: RuleContext): void {
   let k = 0;
   while (k < work.length && /\s/.test(work.charAt(k))) k++;
   if (k < work.length && isLower(work.charAt(k))) candidate(k);
+
+  // Paragraph starts: after a blank line, after a line that ends a sentence, or after a greeting line ("Hi John,").
+  // Line-initial list items ("- budget") and code lines never reach candidate(): they do not start with a letter.
+  if (opts.context !== 'chat' && opts.context !== 'code') {
+    for (const m of work.matchAll(PARAGRAPH_START_RE)) {
+      const prevLine = m[1] ?? '';
+      const wordStart = m.index + m[0].length;
+      const blank = prevLine.trim().length === 0;
+      const trimmed = prevLine.trimEnd();
+      const ended = /[.!?]["'\u201d\u2019)]*$/.test(trimmed) && !/\.\.$/.test(trimmed) && !(trimmed.endsWith('.') && isAbbreviationBefore(work, m.index + trimmed.length - 1));
+      const greeting = /^[ \t]*(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n]*,$/i.test(trimmed);
+      if (blank || greeting || ended) candidate(wordStart);
+    }
+  }
 
   // After a terminator run + optional closers + whitespace.
   for (const m of work.matchAll(SENTENCE_BREAK_RE)) {

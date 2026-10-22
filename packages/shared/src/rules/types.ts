@@ -57,9 +57,14 @@ export interface RuleHit {
   confidence: number;
   autoApplySafe: boolean;
   meaningPreserving: boolean;
+  /** Extra replacement options shown on the card (style rules only); absent when there are none. */
+  alternatives?: string[];
 }
 
-/** What a rule hands to the context; the context fills in `original`, `title` and `category`. */
+/**
+ * What a rule hands to the context; the context fills in `original`, `title` and `category` (from RULE_CATEGORIES,
+ * correctness unless the rule id is a clarity, engagement or delivery id).
+ */
 export interface HitInput {
   rule: string;
   /** RULE_TITLES key (a rule id or a `rule.variant` sub-key). Defaults to `rule`. */
@@ -74,4 +79,6 @@ export interface HitInput {
   autoApplySafe: boolean;
   /** Defaults to true. */
   meaningPreserving?: boolean;
+  /** Extra replacement options (style rules); omitted or empty for none. */
+  alternatives?: string[];
 }

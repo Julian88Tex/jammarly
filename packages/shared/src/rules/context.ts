@@ -5,7 +5,7 @@
 import type { TextRange } from '../types';
 import { isLikelyCode, splitParagraphs } from '../text';
 import type { HitInput, RuleHit, RuleOptions } from './types';
-import { RULE_TITLES } from './titles';
+import { RULE_CATEGORIES, RULE_TITLES } from './titles';
 
 /**
  * Character that replaces every masked code unit in the working copy. It is neither a letter, a
@@ -22,23 +22,42 @@ const LOWER_RE = /\p{Ll}/u;
 const DIGIT_RE = /\p{Nd}/u;
 const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
 
+// ASCII fast paths: these run on nearly every character of every keystroke pass.
 export function isWs(ch: string): boolean {
-  return ch !== '' && WS_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return c === 32 || (c >= 9 && c <= 13);
+  return WS_RE.test(ch);
 }
 export function isLetter(ch: string): boolean {
-  return ch !== '' && LETTER_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  return LETTER_RE.test(ch);
 }
 export function isUpper(ch: string): boolean {
-  return ch !== '' && UPPER_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return c >= 65 && c <= 90;
+  return UPPER_RE.test(ch);
 }
 export function isLower(ch: string): boolean {
-  return ch !== '' && LOWER_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return c >= 97 && c <= 122;
+  return LOWER_RE.test(ch);
 }
 export function isDigit(ch: string): boolean {
-  return ch !== '' && DIGIT_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return c >= 48 && c <= 57;
+  return DIGIT_RE.test(ch);
 }
 export function isWordChar(ch: string): boolean {
-  return ch !== '' && WORD_CHAR_RE.test(ch);
+  if (ch === '') return false;
+  const c = ch.charCodeAt(0);
+  if (c < 128) return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  return WORD_CHAR_RE.test(ch);
 }
 
 /** Closing quotes and brackets that may sit between a terminator and the following whitespace. */
@@ -259,9 +278,9 @@ export function createContext(text: string, opts: RuleOptions): RuleContext {
     const key = h.key ?? h.rule;
     const title = RULE_TITLES[key] ?? RULE_TITLES[h.rule];
     if (title === undefined) return;
-    hits.push({
+    const hit: RuleHit = {
       rule: h.rule,
-      category: 'correctness',
+      category: RULE_CATEGORIES[h.rule] ?? 'correctness',
       severity: h.severity,
       kind: h.kind,
       range: { start, end },
@@ -272,7 +291,10 @@ export function createContext(text: string, opts: RuleOptions): RuleContext {
       confidence: Math.max(0, Math.min(1, h.confidence)),
       autoApplySafe: h.autoApplySafe,
       meaningPreserving: h.meaningPreserving ?? true,
-    });
+    };
+    const alternatives = h.alternatives?.filter((a) => a !== h.replacement && a !== original && a.length > 0);
+    if (alternatives !== undefined && alternatives.length > 0) hit.alternatives = [...new Set(alternatives)];
+    hits.push(hit);
   };
 
   return { text, work, opts, protectedTerms, lastWordStart, blocked, isBlocked, isSentenceStart, touchesWordInProgress, emit, hits };

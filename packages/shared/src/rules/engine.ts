@@ -18,22 +18,43 @@ import { quoteStyleRule } from './quotes';
 import { dashRule } from './dashes';
 import { spellingVariantRule } from './spelling-variant';
 import { serialCommaRule } from './serial-comma';
+import { apostropheRule, spellingRule } from './spelling';
+import { wordChoiceRule } from './word-choice';
+import { phraseRule } from './phrases';
+import { hedgingRule, intensifierRule } from './style';
+import { commaRule, commaSpliceRule } from './commas';
+import { compoundRule } from './compounds';
+import { mechanicsRule } from './mechanics';
 import type { RuleId } from './titles';
 
-export { RULE_IDS, RULE_TITLES } from './titles';
+export { RULE_IDS, RULE_TITLES, RULE_CATEGORIES } from './titles';
 export type { RuleId } from './titles';
 
-const RULES: readonly [RuleId, (ctx: RuleContext) => void][] = [
-  ['spacing', spacingRule],
-  ['repeated_word', repeatedWordRule],
-  ['capitalization', capitalizationRule],
-  ['article', articleRule],
-  ['confusable_word', confusableRule],
-  ['terminal_punctuation', terminalPunctuationRule],
-  ['consistency_quote_style', quoteStyleRule],
-  ['consistency_hyphenation', dashRule],
-  ['consistency_spelling_variant', spellingVariantRule],
-  ['consistency_serial_comma', serialCommaRule],
+/**
+ * Each rule function with the rule ids it can emit. A function runs unless every id it emits is muted; hits of a
+ * muted id are dropped afterwards (one function may serve several ids, e.g. the phrase table).
+ */
+const RULES: readonly [readonly RuleId[], (ctx: RuleContext) => void][] = [
+  [['spacing'], spacingRule],
+  [['repeated_word'], repeatedWordRule],
+  [['capitalization'], capitalizationRule],
+  [['article'], articleRule],
+  [['confusable_word'], confusableRule],
+  [['terminal_punctuation'], terminalPunctuationRule],
+  [['consistency_quote_style'], quoteStyleRule],
+  [['consistency_hyphenation'], dashRule],
+  [['consistency_spelling_variant'], spellingVariantRule],
+  [['consistency_serial_comma'], serialCommaRule],
+  [['spelling'], spellingRule],
+  [['apostrophe'], apostropheRule],
+  [['confusable_word', 'verb_form', 'subject_verb_agreement', 'pronoun_case', 'noun_number'], wordChoiceRule],
+  [['wordy_phrase', 'redundancy', 'cliche', 'confusable_word', 'extra_word', 'missing_word'], phraseRule],
+  [['intensifier'], intensifierRule],
+  [['hedging'], hedgingRule],
+  [['comma'], commaRule],
+  [['comma_splice'], commaSpliceRule],
+  [['hyphen_dash'], compoundRule],
+  [['capitalization', 'terminal_punctuation', 'spacing'], mechanicsRule],
 ];
 
 /**
@@ -46,11 +67,12 @@ export function runRules(text: string, opts: RuleOptions): RuleHit[] {
   if (text.length === 0) return [];
   const ctx = createContext(text, opts);
   const muted = new Set(opts.mutedRules);
-  for (const [id, run] of RULES) {
-    if (muted.has(id)) continue;
+  for (const [ids, run] of RULES) {
+    if (ids.every((id) => muted.has(id))) continue;
     run(ctx);
   }
-  return finalizeHits(ctx);
+  const hits = finalizeHits(ctx);
+  return muted.size === 0 ? hits : hits.filter((h) => !muted.has(h.rule));
 }
 
 function containingBlock(blocks: Paragraph[], range: TextRange): Paragraph | undefined {
@@ -81,7 +103,8 @@ export function hitsToSuggestions(hits: RuleHit[], ctx: { blocks: Paragraph[]; p
   const fullText = blocks.length > 0 ? reconstruct(blocks) : '';
   return hits.map((h) => {
     const block = containingBlock(blocks, h.range);
-    const tier: SuggestionTier = h.autoApplySafe && h.category === 'correctness' ? 'A' : 'B';
+    // types.ts: anything that is not meaning-preserving is Tier C (never bulk-applied).
+    const tier: SuggestionTier = !h.meaningPreserving ? 'C' : h.autoApplySafe && h.category === 'correctness' ? 'A' : 'B';
     const highlight = h.kind === 'insert' && fullText.length >= h.range.end ? wordHighlight(fullText, h.range) : { ...h.range };
     return {
       id: hashText(`${h.rule}|${h.range.start}|${h.range.end}|${h.replacement}`),
@@ -98,7 +121,7 @@ export function hitsToSuggestions(hits: RuleHit[], ctx: { blocks: Paragraph[]; p
       stale: false,
       original: h.original,
       replacement: h.replacement,
-      alternatives: [],
+      alternatives: h.alternatives === undefined ? [] : [...h.alternatives],
       title: h.title,
       explanation: h.explanation,
       confidence: h.confidence,
