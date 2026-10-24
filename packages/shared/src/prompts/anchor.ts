@@ -34,7 +34,7 @@
  */
 import type { EngineOutput, EngineSuggestion, Paragraph, Suggestion, SuggestionCategory, SuggestionKind, SuggestionSeverity, SuggestionTier, TextRange } from '../types';
 import { CATEGORIES } from '../types';
-import { hashText, normalizeForMatch, splitSentences } from '../text';
+import { hashText, normalizeForMatch, splitSentences, tidyEdit } from '../text';
 import type { MaskedBlock } from './messages';
 import { blockIdFor, parseBlockIndex } from './messages';
 import { PLACEHOLDER_CLOSE, PLACEHOLDER_OPEN } from './sanitize';
@@ -608,6 +608,10 @@ function anchorOne(s: EngineSuggestion, ctx: BlockContext): Anchored | Drop {
       if (original.length === 0 && replacement.length === 0) return { reason: 'noop' };
       kind = original.length === 0 ? 'insert' : replacement.length === 0 ? 'delete' : 'replace';
     }
+    // "Firstly" -> "First," right before the comma already there would leave "First,,".
+    replacement = tidyEdit(blockText, { range: { start: relStart, end: relEnd }, original, replacement }).replacement;
+    if (original === replacement) return { reason: 'noop' };
+    if (!isRewrite) kind = original.length === 0 ? 'insert' : replacement.length === 0 ? 'delete' : 'replace';
   }
 
   // 5. Sentence constraint.

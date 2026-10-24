@@ -110,14 +110,14 @@ describe('resolveProfile by host', () => {
 
     expect(superhuman.context).toBe('email');
     expect(superhuman.shortcutSafe).toBe(true);
-    expect(superhuman.fastPassMultiplier).toBe(1.3);
-    expect(superhuman.deepPassMultiplier).toBe(1.6);
+    expect(superhuman.fastPassMultiplier).toBe(1);
+    expect(superhuman.deepPassMultiplier).toBe(1.2);
     expect(superhuman.ladder).toEqual(['execCommand', 'paste', 'beforeinput', 'splice']);
 
     expect(slashy.context).toBe('email');
     expect(slashy.shortcutSafe).toBe(true);
-    expect(slashy.fastPassMultiplier).toBe(1.3);
-    expect(slashy.deepPassMultiplier).toBe(1.6);
+    expect(slashy.fastPassMultiplier).toBe(1);
+    expect(slashy.deepPassMultiplier).toBe(1.2);
     expect(slashy.ladder).toEqual(['execCommand', 'beforeinput', 'paste', 'splice']);
 
     expect(slack.context).toBe('chat');

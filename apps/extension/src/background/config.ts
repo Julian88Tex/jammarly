@@ -107,7 +107,7 @@ export function computeEffectiveConfig(input: ConfigInput): EffectiveConfig {
     categories: categoriesFor(host, profile),
     debounceMs,
     fastPassIdleMs: debounceMs,
-    deepPassIdleMs: Math.max(2500, Math.round(debounceMs * 3.5)),
+    deepPassIdleMs: Math.max(1200, Math.round(debounceMs * 1.75)),
     showFloatingButton: settings.showFloatingButton,
     showUnderlines: settings.showUnderlines,
     colorblindMode: settings.colorblindMode,

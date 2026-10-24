@@ -161,8 +161,8 @@ describe('computeEffectiveConfig', () => {
   it('derives pass idle times from debounceMs and passes through display flags', () => {
     const c = config('a.com', { debounceMs: 700, showUnderlines: false, colorblindMode: true, gdocsInline: 'off' });
     expect(c.fastPassIdleMs).toBe(700);
-    expect(c.deepPassIdleMs).toBe(2500);
-    expect(config('a.com', { debounceMs: 1000 }).deepPassIdleMs).toBe(3500);
+    expect(c.deepPassIdleMs).toBe(1225);
+    expect(config('a.com', { debounceMs: 1000 }).deepPassIdleMs).toBe(1750);
     expect(c.showUnderlines).toBe(false);
     expect(c.colorblindMode).toBe(true);
     expect(c.gdocsInline).toBe('off');

@@ -423,7 +423,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   enabled: true,
   provider: 'anthropic',
   mode: 'hybrid',
-  model: 'claude-opus-5-5',
+  model: 'claude-sonnet-5-5',
   fastModel: 'claude-haiku-5-5',
   apiKey: '',
   debounceMs: 700,

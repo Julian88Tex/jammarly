@@ -20,6 +20,7 @@ import {
   splitParagraphs,
   splitSentences,
   stripUrlsAndCode,
+  tidyEdit,
 } from '../src/text';
 
 // ---------------------------------------------------------------------------
@@ -1905,5 +1906,47 @@ describe('adversarial', () => {
       assertMaskInvariants(urls);
       expect(elapsed(() => isLikelyCode('<a '.repeat(7000)))).toBeLessThan(PERF_BUDGET_MS);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// doubled punctuation at edit seams
+// ---------------------------------------------------------------------------
+
+describe('doubled punctuation at seams', () => {
+  const edit = (text: string, original: string, replacement: string, at = text.indexOf(original)): Edit => ({ range: { start: at, end: at + original.length }, original, replacement });
+
+  it('drops a trailing comma the text already has', () => {
+    const text = 'Firstly, finance has not approved it.';
+    const tidy = tidyEdit(text, edit(text, 'Firstly', 'First,'));
+    expect(applyEdits(text, [tidy]).text).toBe('First, finance has not approved it.');
+  });
+
+  it('turns an insert of an existing comma into a no-op', () => {
+    const text = 'not approved it yet, and we wait.';
+    const at = text.indexOf(',');
+    const tidy = tidyEdit(text, { range: { start: at, end: at }, original: '', replacement: ',' });
+    expect(tidy.replacement).toBe(tidy.original);
+  });
+
+  it('drops a leading space or mark doubled by the text before', () => {
+    const text = 'We met.  Then left';
+    const tidy = tidyEdit(text, edit(text, 'Then', ' Then'));
+    expect(tidy.replacement).toBe('Then');
+  });
+
+  it('leaves an ellipsis that was already doubled alone', () => {
+    const text = 'wait... ok';
+    const tidy = tidyEdit(text, edit(text, '..', '..'));
+    expect(tidy.replacement).toBe('..');
+  });
+
+  it('resolveOverlaps keeps only one of two touching edits that would double a comma', () => {
+    const text = 'Firstly finance has not approved it.';
+    const replace = mk({ range: { start: 0, end: 7 }, original: 'Firstly', replacement: 'First,', confidence: 0.9 });
+    const insert = mk({ range: { start: 7, end: 7 }, original: '', replacement: ',', confidence: 0.8 });
+    const kept = resolveOverlaps([replace, insert]);
+    expect(kept).toHaveLength(1);
+    expect(applyEdits(text, kept).text).toBe('First, finance has not approved it.');
   });
 });

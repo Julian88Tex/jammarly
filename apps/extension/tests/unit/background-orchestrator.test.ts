@@ -598,7 +598,7 @@ describe('request budget for low-tier keys', () => {
 
     expect(provider.calls.map((c) => [c.pass, c.model, c.blockIds.length])).toEqual([
       ['fast', 'claude-haiku-5-5', 6],
-      ['deep', 'claude-opus-5-5', 6],
+      ['deep', 'claude-sonnet-5-5', 6],
     ]);
     // The deep call started only after the fast call had finished: no burst of two concurrent requests.
     expect(provider.calls[1]!.start).toBeGreaterThanOrEqual(provider.calls[0]!.end);

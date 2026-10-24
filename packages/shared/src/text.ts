@@ -528,6 +528,35 @@ function rangesConflict(a: TextRange, b: TextRange): boolean {
   return a.start === b.start && a.end === b.end;
 }
 
+/** Marks that must never appear twice in a row where two pieces of text meet. */
+const SEAM_MARKS = ',.;:';
+
+/** True when `left`'s last character and `right`'s first are the same seam mark, or both spaces. */
+export function doubledAtSeam(left: string, right: string): boolean {
+  const a = left.slice(-1);
+  return a !== '' && a === right.slice(0, 1) && (a === ' ' || SEAM_MARKS.includes(a));
+}
+
+/**
+ * Trims an edit's replacement so it does not double a mark or space that already sits beside it in `text`: "Firstly"
+ * -> "First," right before an existing comma becomes "First". The edit's own original is left alone where it already
+ * doubled (an ellipsis, say). May return a no-op edit (replacement === original); callers drop those.
+ */
+export function tidyEdit(text: string, edit: Edit): Edit {
+  const { start, end } = edit.range;
+  let r = edit.replacement;
+  const after = text.slice(end, end + 1);
+  const before = text.slice(Math.max(0, start - 1), start);
+  if (doubledAtSeam(r, after) && !doubledAtSeam(edit.original, after)) r = r.slice(0, -1);
+  if (doubledAtSeam(before, r) && !doubledAtSeam(before, edit.original)) r = r.slice(1);
+  return r === edit.replacement ? edit : { ...edit, range: { start, end }, replacement: r };
+}
+
+/** `a` ends exactly where `b` starts and together they would put the same mark twice ("First," then ","). */
+function touchDoubled(a: Suggestion, b: Suggestion): boolean {
+  return a.range.end === b.range.start && doubledAtSeam(a.replacement, b.replacement);
+}
+
 function dedupeStrings(values: string[], exclude: string): string[] {
   const seen = new Set<string>([exclude]);
   const out: string[] = [];
@@ -591,8 +620,8 @@ export function resolveOverlaps(suggestions: Suggestion[]): Suggestion[] {
     }
     const prev = kept[lo - 1];
     const next = kept[lo];
-    if (prev !== undefined && rangesConflict(prev.range, s.range)) continue;
-    if (next !== undefined && rangesConflict(next.range, s.range)) continue;
+    if (prev !== undefined && (rangesConflict(prev.range, s.range) || touchDoubled(prev, s))) continue;
+    if (next !== undefined && (rangesConflict(next.range, s.range) || touchDoubled(s, next))) continue;
     kept.splice(lo, 0, s);
   }
   return kept;

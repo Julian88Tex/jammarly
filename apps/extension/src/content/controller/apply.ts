@@ -7,7 +7,7 @@
  * changed since.
  */
 import type { AcceptAllScope, ApplyReport, ApplyTransaction, Edit, Suggestion, TextRange } from '@jammarly/shared/types';
-import { applyEdits } from '@jammarly/shared/text';
+import { applyEdits, tidyEdit } from '@jammarly/shared/text';
 import type { FieldAdapter } from '../field-adapter';
 import type { SuggestionStore } from './store';
 import { selectAcceptAll } from './store';
@@ -162,9 +162,14 @@ export class ApplyEngine {
       s = store.get(suggestionId);
       if (!s) return { status: 'missing' };
     }
-    const edit = editForSuggestion(s, alternativeIndex);
+    const edit = tidyEdit(model.text, editForSuggestion(s, alternativeIndex));
     const check = validateEdit(model.text, edit, adapter.getProtectedRanges());
     if (check !== 'ok') return { status: check, suggestion: s };
+    if (edit.replacement === edit.original) {
+      // The text already has what this fix would add (another fix put the comma there).
+      store.remove([s.id]);
+      return { status: 'mismatch', suggestion: s };
+    }
     const before = model.text;
     const expected = applyEdits(before, [edit]).text;
     this.host.beginOwnEdit([edit], [s.id]);
@@ -210,8 +215,8 @@ export class ApplyEngine {
     const valid: { s: Suggestion; edit: Edit }[] = [];
     for (const s of selection.selected) {
       const current = store.get(s.id) ?? s;
-      const edit = editForSuggestion(current);
-      if (validateEdit(model.text, edit, protectedRanges) === 'ok') valid.push({ s: current, edit });
+      const edit = tidyEdit(model.text, editForSuggestion(current));
+      if (validateEdit(model.text, edit, protectedRanges) === 'ok' && edit.replacement !== edit.original) valid.push({ s: current, edit });
       else skipped.push(current);
     }
     if (valid.length === 0) return empty();

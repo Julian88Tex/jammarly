@@ -257,7 +257,7 @@ export function defaultProfile(now = '1970-01-01T00:00:00.000Z'): ProfileDocumen
       customInstructions: { value: '', hlc: z },
       styleDecisions: { value: {}, hlc: z },
       mode: { value: 'hybrid', hlc: z },
-      model: { value: 'claude-opus-5-5', hlc: z },
+      model: { value: 'claude-sonnet-5-5', hlc: z },
       fastModel: { value: 'claude-haiku-5-5', hlc: z },
       userSalt: { value: '', hlc: z },
       privateSites: { value: [], hlc: z },
