@@ -348,7 +348,9 @@ test.describe('overlay UI (Chromium)', () => {
     await expect(content).toBeVisible();
     await expect(content.locator('s')).toHaveText(['teh', 'tomorow']);
     await expect(content.locator('strong')).toHaveText(['the', 'tomorrow']);
-    await expect(content).toHaveText('Their going to tehthe store tomorowtomorrow.');
+    // The label and the sentence share one clickable block; the sentence itself is its own element.
+    await expect(content.locator('[data-jm="card-title"]')).toHaveText('Correct the sentence');
+    await expect(content.locator('[data-jm="sentence-text"]')).toHaveText('Their going to tehthe store tomorowtomorrow.');
     const style = await content.locator('s').first().evaluate((el) => getComputedStyle(el).textDecorationLine);
     expect(style).toContain('line-through');
     const weight = await content.locator('strong').first().evaluate((el) => Number(getComputedStyle(el).fontWeight));

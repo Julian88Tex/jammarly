@@ -44,7 +44,8 @@ describe('field session: Accept everything sweeps', () => {
     expect(h.messages('check').length).toBe(checksBefore + 1);
     req = lastCheck(h);
     expect(req.text).toBe(round1);
-    expect(h.ui.toasts.at(-1)?.message).toBe('Fixing… round 1 (1 change so far)');
+    // No toast mid-sweep: one toast reports the total when it ends.
+    expect(h.ui.toasts).toHaveLength(0);
 
     h.emit({ type: 'check-result', result: makeResult('f1', req.version, round1, [sugAt(round1, 'a review of', { id: 's2', replacement: 'to review', ...style })], { pass: req.pass }) });
     await flushPromises(6);
@@ -56,7 +57,16 @@ describe('field session: Accept everything sweeps', () => {
     h.emit({ type: 'check-result', result: makeResult('f1', req.version, round2, [], { pass: req.pass }) });
     await flushPromises(6);
     expect(h.adapter.getText()).toBe(round2);
-    expect(h.ui.toasts.at(-1)?.message).toBe('Fixed 2 issues in 2 rounds');
+    expect(h.ui.toasts).toHaveLength(1);
+    const done = h.ui.toasts.at(-1)!;
+    expect(done.message).toBe('Fixed 2 issues in 2 rounds');
+
+    // The toast's Undo reverts every round, not only the last one.
+    expect(done.options?.undoTransactionId).toBeTruthy();
+    const reverted = await h.session.undo(done.options!.undoTransactionId);
+    await flushPromises(6);
+    expect(reverted).toBe(2);
+    expect(h.adapter.getText()).toBe(TEXT);
     h.session.dispose();
   });
 

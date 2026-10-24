@@ -145,7 +145,9 @@ export class FieldSession {
   private readonly checked = new Map<string, CheckPass>();
   private everChecked = false;
   /** "Accept everything" keeps going: apply, re-check the changed text, apply that round's fixes, until clean. */
-  private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; pass?: RequestedPass } | null = null;
+  private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; txIds: string[]; pass?: RequestedPass } | null = null;
+  /** A finished multi-round sweep: its toast's Undo (keyed by the last round's transaction) reverts every round. */
+  private readonly sweepGroups = new Map<string, string[]>();
   private deepScheduled = false;
   private lastError: CheckError | undefined;
   private toneValue: ToneAnalysis | undefined;
@@ -483,11 +485,13 @@ export class FieldSession {
       const sweeping = scope.suggestionIds === undefined;
       const round = continuing && this.sweep ? this.sweep.round + 1 : 1;
       const total = (continuing && this.sweep ? this.sweep.total : 0) + n;
+      const txIds = [...(continuing && this.sweep ? this.sweep.txIds : []), tx.id];
       if (sweeping && round < MAX_SWEEP_ROUNDS) {
-        this.sweep = { scope, round, total, lastTx: tx.id };
-        this.ui.toast(`Fixing… round ${round} (${total} change${total === 1 ? '' : 's'} so far)`, { undoTransactionId: tx.id });
+        // No toast until the sweep ends: one toast reports the total, and its Undo reverts every round.
+        this.sweep = { scope, round, total, lastTx: tx.id, txIds };
       } else {
         this.sweep = null;
+        this.rememberSweep(txIds);
         this.ui.toast(sweepDoneText(total, round), { undoTransactionId: tx.id });
       }
       if (scope.group !== 'grammar' && result.pendingRewrites.length > 0 && this.sweep === null) {
@@ -533,20 +537,40 @@ export class FieldSession {
     const sweep = this.sweep;
     this.sweep = null;
     if (!sweep) return;
+    this.rememberSweep(sweep.txIds);
     this.ui.toast(sweepDoneText(sweep.total, sweep.round), { undoTransactionId: sweep.lastTx });
     this.refresh();
   }
 
+  private rememberSweep(txIds: string[]): void {
+    const last = txIds[txIds.length - 1];
+    if (last === undefined || txIds.length < 2) return;
+    this.sweepGroups.set(last, [...txIds]);
+    if (this.sweepGroups.size > 10) this.sweepGroups.delete(this.sweepGroups.keys().next().value as string);
+  }
+
   async undo(transactionId?: string): Promise<number> {
     if (this.disposed) return 0;
-    const result = await this.apply.undo(transactionId);
-    if (this.disposed) return 0;
-    if (result.revertedIds.length > 0) {
-      this.ui.toast(result.status === 'partial' ? 'Undone (some changes were already edited)' : 'Undone');
+    // A multi-round "Accept everything" is one action for the user: undo every round, newest first.
+    const group = transactionId ? this.sweepGroups.get(transactionId) : undefined;
+    if (transactionId && group) this.sweepGroups.delete(transactionId);
+    const ids = group ? [...group].reverse() : [transactionId];
+    let reverted = 0;
+    let partial = false;
+    let failed = false;
+    for (const id of ids) {
+      const result = await this.apply.undo(id);
+      if (this.disposed) return 0;
+      reverted += result.revertedIds.length;
+      if (result.status === 'partial') partial = true;
+      if (result.status === 'failed') failed = true;
+    }
+    if (reverted > 0) {
+      this.ui.toast(partial || failed ? 'Undone (some changes were already edited)' : 'Undone');
       this.scheduler.afterApply();
-    } else if (result.status === 'failed') this.ui.toast("Couldn't undo: the text changed");
+    } else if (failed) this.ui.toast("Couldn't undo: the text changed");
     this.refresh();
-    return result.revertedIds.length;
+    return reverted;
   }
 
   async revert(suggestionId: string): Promise<boolean> {
