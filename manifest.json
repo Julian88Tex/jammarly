@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Jammarly",
   "description": "Grammar, clarity and tone suggestions powered by Claude. Hover to fix, or accept everything at once.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxIEBM5m936QjxSfkoySbD3569LYbAr/fji+vBjLiDq/bNwDjG2ZabQWqOpgm3PPdtiaRi0VKtlGe+PtKzqCTvj2V/pPKkHERGAcfcx/xUAYQm9k+8+y1Y9pu3nfCBjZEk1XGHaNzPqWJ3aMzWcD5cjcM9PZZJGLIpiJB013q09+aFwX3T1LUloKdedhDmjdLQSRgDHVZlw8nya5cNaU1uuJzfBD1VeR7r9xbBo+diW6GqR8bHUZy99VNWQrwibcZSM6ujNOVRuzw1Wv9Mt0a5Jfx3XjbfSLRiZiLY5BjlHz+0E859Q4MTZACAloBPjlAHYJO6GJtbF2fepdooUUopQIDAQAB",
   "icons": {
@@ -96,7 +96,10 @@
       "suggested_key": {
         "default": "Alt+Shift+A"
       },
-      "description": "Accept all suggestions in the focused field"
+      "description": "Accept everything in the focused field (grammar, style and tone)"
+    },
+    "accept-grammar": {
+      "description": "Accept all grammar fixes in the focused field"
     }
   },
   "web_accessible_resources": [
