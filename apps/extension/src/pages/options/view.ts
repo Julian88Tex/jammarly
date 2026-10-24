@@ -385,7 +385,25 @@ function renderGeneral(state: OptionsState, actions: OptionsActions): HTMLElemen
       renderKeyTest(state),
     ),
   );
+
+  wrap.appendChild(renderShortcuts(state, actions));
   return wrap;
+}
+
+function renderShortcuts(state: OptionsState, actions: OptionsActions): HTMLElement {
+  const rows = state.shortcuts;
+  return card(
+    'Keyboard shortcuts',
+    helpText('Chrome keeps extension shortcuts on its own page. Open it, find Jammarly, and click the pencil next to a command to set any key, for example one for Accept everything.'),
+    rows && rows.length > 0
+      ? h(
+          'dl',
+          { class: 'jm-usage', dataset: { shortcuts: 'list' } },
+          rows.flatMap((r) => [h('dt', null, r.description), h('dd', { dataset: { shortcut: r.name } }, r.shortcut ? h('kbd', null, r.shortcut) : 'Not set')]),
+        )
+      : null,
+    h('div', { class: 'jm-actions' }, button({ kind: 'secondary', label: 'Change shortcuts', onClick: () => void actions.openShortcutSettings(), focusKey: 'general:shortcuts' })),
+  );
 }
 
 function modelField(label: string, key: 'model' | 'fastModel', current: string, state: OptionsState, actions: OptionsActions, disabled: boolean): HTMLElement {

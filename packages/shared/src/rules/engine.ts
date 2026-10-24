@@ -22,6 +22,7 @@ import { apostropheRule, spellingRule } from './spelling';
 import { wordChoiceRule } from './word-choice';
 import { phraseRule } from './phrases';
 import { hedgingRule, intensifierRule } from './style';
+import { tenseRule } from './tense';
 import { commaRule, commaSpliceRule } from './commas';
 import { compoundRule } from './compounds';
 import { mechanicsRule } from './mechanics';
@@ -51,6 +52,7 @@ const RULES: readonly [readonly RuleId[], (ctx: RuleContext) => void][] = [
   [['wordy_phrase', 'redundancy', 'cliche', 'confusable_word', 'extra_word', 'missing_word'], phraseRule],
   [['intensifier'], intensifierRule],
   [['hedging'], hedgingRule],
+  [['tense'], tenseRule],
   [['comma'], commaRule],
   [['comma_splice'], commaSpliceRule],
   [['hyphen_dash'], compoundRule],

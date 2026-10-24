@@ -96,7 +96,10 @@
       "suggested_key": {
         "default": "Alt+Shift+A"
       },
-      "description": "Accept all suggestions in the focused field"
+      "description": "Accept everything in the focused field (grammar, style and tone)"
+    },
+    "accept-grammar": {
+      "description": "Accept all grammar fixes in the focused field"
     }
   },
   "web_accessible_resources": [

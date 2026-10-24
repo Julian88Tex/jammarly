@@ -58,7 +58,7 @@ npm run build                      # builds packages, the extension (apps/extens
 3. Focus any text field. Local checks appear immediately; Claude suggestions follow when you pause.
 
 Shortcuts (editable at `chrome://extensions/shortcuts`): `Alt+Shift+J` opens the popup, `Alt+Shift+G` toggles
-Jammarly on the current site, `Alt+Shift+A` accepts all grammar suggestions in the focused field.
+Jammarly on the current site, `Alt+Shift+A` accepts everything in the focused field (grammar, style and tone). Change the keys on the settings page under Keyboard shortcuts.
 
 To rebuild on change: `npm run extension -- watch`, then reload the extension.
 

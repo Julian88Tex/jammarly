@@ -291,6 +291,8 @@ export const PARITY_CASES: ParityCase[] = [
   { text: 'did you get a chance to review it.', rule: 'terminal_punctuation', original: '.', replacement: '?' },
   { text: 'We should discuss about the budget tomorrow.', rule: 'extra_word', original: 'discuss about', replacement: 'discuss' },
   { text: 'It might could take longer than that.', rule: 'extra_word', original: 'might could', replacement: 'might' },
+  { text: 'Priya and I were looking at a few venues yesterday.', rule: 'tense', original: 'were looking', replacement: 'looked' },
+  { text: 'We were discussing the budget two days ago.', rule: 'tense', original: 'were discussing', replacement: 'discussed' },
   { text: 'Can you explain me how the new process works?', rule: 'missing_word', original: 'explain me', replacement: 'explain to me' },
 
   // ---------------------------------------------------------------- cliches
@@ -304,6 +306,8 @@ export const PARITY_CASES: ParityCase[] = [
 
 /** Natural email and chat sentences that must produce zero suggestions. */
 export const CLEAN_SENTENCES: string[] = [
+  'We were looking at venues yesterday when the call came in.',
+  'I was working on the deck all day yesterday.',
   'Hi Sarah,\n\nThanks for the update. I\'ll take a look this afternoon.',
   'Hey team, quick reminder that the demo is at 3 pm today.',
   'Thanks for your help with the launch!',

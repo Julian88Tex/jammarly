@@ -31,6 +31,7 @@ export const RULE_IDS = [
   'comma_splice',
   'extra_word',
   'missing_word',
+  'tense',
 ] as const;
 
 export type RuleId = (typeof RULE_IDS)[number];
@@ -97,6 +98,7 @@ export const RULE_TITLES: Record<string, string> = {
   hyphen_dash: 'Add a hyphen',
   subject_verb_agreement: 'Make the subject and verb agree',
   verb_form: 'Fix the verb form',
+  tense: 'Use the simple past',
   pronoun_case: 'Fix the pronoun',
   noun_number: 'Use the plural form',
   wordy_phrase: 'Shorten the wordy phrase',

@@ -690,3 +690,21 @@ describe('adversarial', () => {
     expect(root.textContent).toContain('not paired');
   });
 });
+
+describe('options: keyboard shortcuts', () => {
+  it('lists the commands with their keys and opens Chrome\'s shortcuts page', async () => {
+    await mount('#general');
+    const keys = (name: string) => root.querySelector(`[data-shortcut="${name}"]`)?.textContent;
+    expect(keys('accept-all')).toBe('Alt+Shift+A');
+    expect(keys('accept-grammar')).toBe('Not set');
+    expect(root.querySelector('[data-shortcut="_execute_action"]')).toBeNull();
+    click('[data-focus-key="general:shortcuts"]');
+    await flush();
+    expect(mock.tabsCreated).toEqual([{ url: 'chrome://extensions/shortcuts' }]);
+    // Back from Chrome's page with a key set: the list follows.
+    mock.commands = mock.commands.map((c) => (c.name === 'accept-grammar' ? { ...c, shortcut: 'Ctrl+Shift+Y' } : c));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    expect(keys('accept-grammar')).toBe('Ctrl+Shift+Y');
+  });
+});

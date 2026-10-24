@@ -140,6 +140,13 @@ describe('stabilizeRuleIds / selectAcceptAll / counts', () => {
     expect(every.excluded.map((s) => s.id)).toEqual(['bo']);
     expect(every.pendingRewrites.map((s) => s.id)).toEqual(['rw']);
 
+    // A rewrite with no word fix in its sentence goes in with Accept everything (first wording), never with style alone.
+    const freeRw = makeSuggestion({ id: 'rf', kind: 'rewrite', tier: 'C', range: { start: 70, end: 90 }, original: 'y'.repeat(20), replacement: 'shorter' });
+    const withFree = selectAcceptAll([...all, freeRw], { group: 'all' });
+    expect(withFree.selected.map((s) => s.id)).toEqual(['rf', 'nm', 'b', 'an', 'a']);
+    expect(withFree.pendingRewrites.map((s) => s.id)).toEqual(['rw']);
+    expect(selectAcceptAll([...all, freeRw], { group: 'style' }).pendingRewrites.map((s) => s.id)).toEqual(['rw', 'rf']);
+
     const subset = selectAcceptAll(all, { group: 'all', suggestionIds: ['b'] });
     expect(subset.selected.map((s) => s.id)).toEqual(['b']);
 

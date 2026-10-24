@@ -47,7 +47,19 @@ export interface OptionsState {
   defaultSites: 'everywhere' | 'opt-in' | null;
   /** Bumps when the page should scroll to the top (route change). */
   lastError: { at: string; message: string } | null;
+  /** The extension's keyboard commands and their current keys; null until read (or where chrome.commands is missing). */
+  shortcuts: ShortcutInfo[] | null;
 }
+
+export interface ShortcutInfo {
+  name: string;
+  description: string;
+  /** Empty when no key is set. */
+  shortcut: string;
+}
+
+/** Chrome only lets people change extension shortcuts on this page; an extension may open it. */
+export const SHORTCUTS_URL = 'chrome://extensions/shortcuts';
 
 export type Drafts = Map<string, string>;
 
@@ -100,6 +112,8 @@ export interface OptionsActions {
   removePrivateSite(host: string): Promise<boolean>;
   // advanced
   openSidePanel(): Promise<void>;
+  // shortcuts
+  openShortcutSettings(): Promise<void>;
 }
 
 export interface OptionsApp {
@@ -128,6 +142,7 @@ export function initialOptionsState(route: Route = 'general'): OptionsState {
     busy: {},
     defaultSites: null,
     lastError: null,
+    shortcuts: null,
   };
 }
 
@@ -264,8 +279,14 @@ export function mountOptions(root: HTMLElement, opts: MountOptionsOpts = {}): Op
     store.update((s) => ({ ...s, usage: usage?.usage && typeof usage.usage === 'object' ? usage.usage : s.usage, sync: sync ? sync.sync : s.sync }));
   }
 
+  async function reloadShortcuts(): Promise<void> {
+    const shortcuts = await readShortcuts();
+    if (disposed || shortcuts === null) return;
+    store.update((s) => ({ ...s, shortcuts }));
+  }
+
   async function load(): Promise<void> {
-    await Promise.all([reloadSettings(), reloadProfile(), reloadUsageAndSync()]);
+    await Promise.all([reloadSettings(), reloadProfile(), reloadUsageAndSync(), reloadShortcuts()]);
     if (disposed) return;
     store.update((s) => ({ ...s, loading: false, route: routeFromHash(getHash(), s.profile) }));
   }
@@ -585,6 +606,15 @@ export function mountOptions(root: HTMLElement, opts: MountOptionsOpts = {}): Op
       if (!res.ok) fail(res);
       else toast.show('Side panel opened');
     },
+    async openShortcutSettings() {
+      const tabs = (globalThis as { chrome?: typeof chrome }).chrome?.tabs;
+      try {
+        if (!tabs) throw new Error('no tabs api');
+        await tabs.create({ url: SHORTCUTS_URL });
+      } catch {
+        toast.show(`Open ${SHORTCUTS_URL} in a new tab to change the keys.`, { durationMs: 8000 });
+      }
+    },
   };
 
   const render = (): void => {
@@ -597,6 +627,11 @@ export function mountOptions(root: HTMLElement, opts: MountOptionsOpts = {}): Op
     store.update((s) => ({ ...s, route: routeFromHash(getHash(), s.profile), confirm: null }));
   };
   window.addEventListener('hashchange', onHashChange);
+  // Coming back from Chrome's shortcuts page: show the keys just set.
+  const onVisible = (): void => {
+    if (document.visibilityState === 'visible') void reloadShortcuts();
+  };
+  document.addEventListener('visibilitychange', onVisible);
   render();
   const ready = load();
 
@@ -611,6 +646,7 @@ export function mountOptions(root: HTMLElement, opts: MountOptionsOpts = {}): Op
       unsubscribe();
       stopTheme();
       window.removeEventListener('hashchange', onHashChange);
+      document.removeEventListener('visibilitychange', onVisible);
     },
   };
 }
@@ -641,4 +677,18 @@ export function extensionInfo(): { id: string; version: string } {
     version = '';
   }
   return { id: api?.runtime?.id ?? '', version };
+}
+
+/** The manifest's keyboard commands with their current keys (Chrome's own popup entry left out). */
+export async function readShortcuts(): Promise<ShortcutInfo[] | null> {
+  const commands = (globalThis as { chrome?: typeof chrome }).chrome?.commands;
+  if (!commands?.getAll) return null;
+  try {
+    const all = await commands.getAll();
+    return all
+      .filter((c) => typeof c.name === 'string' && c.name !== '_execute_action')
+      .map((c) => ({ name: c.name!, description: c.description ?? c.name!, shortcut: c.shortcut ?? '' }));
+  } catch {
+    return null;
+  }
 }

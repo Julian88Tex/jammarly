@@ -1,6 +1,6 @@
 /**
- * Keyboard commands (manifest `commands`): toggle Jammarly on the active tab's site and accept all grammar in the
- * active field. `open-panel` and `_execute_action` are handled by Chrome itself.
+ * Keyboard commands (manifest `commands`): toggle Jammarly on the active tab's site, accept everything in the
+ * active field (the menu's "Accept everything", repeat rounds included), or only its grammar fixes. `open-panel` and `_execute_action` are handled by Chrome itself.
  */
 import type { CoreWithActivity } from './core';
 import type { Hub } from './ports';
@@ -31,11 +31,11 @@ export async function handleCommand(command: string, tab: chrome.tabs.Tab | unde
     hub.broadcastConfig(host);
     return;
   }
-  if (command === 'accept-all') {
+  if (command === 'accept-all' || command === 'accept-grammar') {
     if (tabId === null) return;
     const field = hub.activeField(tabId);
     if (!field) return;
-    hub.sendPanelAction({ type: 'accept-all', fieldId: field.fieldId, scope: { group: 'grammar' } });
+    hub.sendPanelAction({ type: 'accept-all', fieldId: field.fieldId, scope: { group: command === 'accept-all' ? 'all' : 'grammar' } });
   }
 }
 

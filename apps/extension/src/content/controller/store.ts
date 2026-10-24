@@ -228,7 +228,15 @@ export function selectAcceptAll(all: readonly Suggestion[], scope: AcceptAllScop
   const picked = resolveOverlaps(candidates);
   const pickedIds = new Set(picked.map((p) => p.id));
   const excluded = candidates.filter((c) => !pickedIds.has(c.id));
-  const pendingRewrites = scope.group === 'grammar' ? [] : all.filter((s) => s.kind === 'rewrite' && (!only || only.has(s.id)));
+  const rewrites = scope.group === 'grammar' ? [] : all.filter((s) => s.kind === 'rewrite' && (!only || only.has(s.id)));
+  // "Accept everything" means everything: a rewrite goes in with its first wording (Undo reverses it), unless a word
+  // fix already sits in its sentence; that sentence is re-checked and the rewrite comes back against the new text.
+  const pendingRewrites: Suggestion[] = [];
+  for (const r of rewrites) {
+    const free = scope.group === 'all' && !r.stale && r.replacement.length > 0 && !picked.some((p) => p.range.start < r.range.end && r.range.start < p.range.end);
+    if (free) picked.push(r);
+    else pendingRewrites.push(r);
+  }
   return { selected: picked.sort((a, b) => b.range.start - a.range.start || b.range.end - a.range.end), pendingRewrites, excluded };
 }
 

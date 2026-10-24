@@ -517,6 +517,11 @@ export class FieldSession {
       return 0;
     }
     if (result.skipped.length > 0) this.ui.toast("Couldn't apply these changes here");
+    else if (scope.suggestionIds === undefined) {
+      // A shortcut press with nothing to do still answers, so it never looks like it was ignored.
+      const k = scope.group === 'grammar' ? 0 : result.pendingRewrites.length;
+      this.ui.toast(k > 0 ? `${k} rewrite${k === 1 ? '' : 's'} need${k === 1 ? 's' : ''} your choice` : 'Nothing left to fix');
+    }
     this.refresh();
     return 0;
   }

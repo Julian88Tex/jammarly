@@ -337,7 +337,7 @@ describe('popup field actions (moved from the floating button)', () => {
 });
 
 describe('popup counts add up', () => {
-  it('counts every fixable suggestion whatever its tier and lists the rest as needing a choice', async () => {
+  it('counts every fixable suggestion whatever its tier, rewrites included in Accept everything', async () => {
     await mount();
     const grammar = suggestionStub('g1', 'correctness');
     const hedge = { ...suggestionStub('h1', 'delivery'), tier: 'C' as const, meaningPreserving: false, kind: 'delete' as const, replacement: '', range: { start: 10, end: 18 }, highlight: { start: 10, end: 18 } };
@@ -348,7 +348,8 @@ describe('popup counts add up', () => {
     const text = (key: string) => root.querySelector(`[data-focus-key="${key}"]`)?.textContent ?? '';
     expect(text('accept-grammar')).toContain('1');
     expect(text('accept-style')).toContain('2');
-    expect(text('accept-all')).toContain('3');
-    expect(root.querySelector('.jm-action-note')?.textContent).toBe('1 suggestion needs your choice in the review panel.');
+    // Accept everything takes the rewrite too (first wording); nothing is left needing a choice.
+    expect(text('accept-all')).toContain('4');
+    expect(root.querySelector('.jm-action-note')).toBeNull();
   });
 });

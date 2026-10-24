@@ -37,6 +37,8 @@ export interface ChromeMock {
   windowId: number | undefined;
   /** Make connect throw (no runtime). */
   connectThrows: boolean;
+  /** What chrome.commands.getAll answers. */
+  commands: chrome.commands.Command[];
   settings: PublicDeviceSettings;
   profile: ProfileDocument;
   usage: UsageTotals;
@@ -148,6 +150,11 @@ export function installChromeMock(opts: InstallOptions = {}): ChromeMock {
     tabsCreated: [],
     tabs: opts.tabs ?? [{ id: 7, url: 'https://mail.google.com/mail/u/0/#inbox', active: true, index: 0, windowId: 1, pinned: false, highlighted: true, incognito: false, selected: true, discarded: false, autoDiscardable: true, groupId: -1, frozen: false } as chrome.tabs.Tab],
     windowId: opts.windowId ?? 1,
+    commands: [
+      { name: '_execute_action', description: '', shortcut: 'Alt+Shift+J' },
+      { name: 'accept-all', description: 'Accept everything in the focused field (grammar, style and tone)', shortcut: 'Alt+Shift+A' },
+      { name: 'accept-grammar', description: 'Accept all grammar fixes in the focused field', shortcut: '' },
+    ],
     connectThrows: false,
     settings: fakeSettings(opts.settings),
     profile: opts.profile ?? defaultProfile(),
@@ -216,6 +223,7 @@ export function installChromeMock(opts: InstallOptions = {}): ChromeMock {
         return Promise.resolve({ id: 99 });
       },
     },
+    commands: { getAll: () => Promise.resolve(mock.commands) },
   };
   (globalThis as { chrome?: unknown }).chrome = chromeLike;
   return mock;

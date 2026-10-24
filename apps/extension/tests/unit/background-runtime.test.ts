@@ -201,7 +201,7 @@ describe('worker lifecycle', () => {
     }
   });
 
-  it('commands: toggle-on-site flips the active host, accept-all targets the active field', async () => {
+  it('commands: toggle-on-site flips the active host, accept-all (everything) and accept-grammar target the active field', async () => {
     mock = installChromeMock({ tabs: [{ id: 7, windowId: 1, url: 'https://x.com/home', active: true }] });
     mock.storage.local.data.set('settings', { provider: 'mock' });
     const worker = createWorker({ chrome: mock.chrome, appOrigin: '' });
@@ -217,6 +217,10 @@ describe('worker lifecycle', () => {
     mock.commands.onCommand.dispatch('accept-all', { id: 7, url: 'https://x.com/home' } as never);
     await mock.flush(6);
     const action = pair.client.received.find((m) => (m as { type: string }).type === 'panel-action') as { action: unknown } | undefined;
-    expect(action?.action).toEqual({ type: 'accept-all', fieldId: 'fA', scope: { group: 'grammar' } });
+    expect(action?.action).toEqual({ type: 'accept-all', fieldId: 'fA', scope: { group: 'all' } });
+    mock.commands.onCommand.dispatch('accept-grammar', { id: 7, url: 'https://x.com/home' } as never);
+    await mock.flush(6);
+    const actions = pair.client.received.filter((m) => (m as { type: string }).type === 'panel-action') as { action: unknown }[];
+    expect(actions.at(-1)?.action).toEqual({ type: 'accept-all', fieldId: 'fA', scope: { group: 'grammar' } });
   });
 });

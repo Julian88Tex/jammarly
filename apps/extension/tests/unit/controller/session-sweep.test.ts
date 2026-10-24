@@ -100,4 +100,15 @@ describe('field session: Accept everything sweeps', () => {
     expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
     h.session.dispose();
   });
+
+  it('an accept-everything with nothing to apply says so instead of staying silent', async () => {
+    const h = makeSession({ text: TEXT });
+    const req = firstCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [], { pass: req.pass }) });
+    await flushPromises();
+    await h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    expect(h.ui.toasts.at(-1)?.message).toBe('Nothing left to fix');
+    h.session.dispose();
+  });
 });

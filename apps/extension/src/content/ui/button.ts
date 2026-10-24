@@ -23,6 +23,13 @@ export const OUTSIDE_GAP = 4;
 export const EXPAND_DELAY_MS = 600;
 export const TONE_MIN_CHARS = 150;
 export const COUNT_CAP = 99;
+/** Grammarly's own widget sits in the same corner (about 48 px wide); with Grammarly running, ours moves left of it. */
+export const GRAMMARLY_CLEARANCE = 56;
+
+/** True when the Grammarly extension (or its desktop app) has injected into this page. */
+export function grammarlyPresent(doc: Document = document): boolean {
+  return doc.querySelector('grammarly-extension, grammarly-desktop-integration, grammarly-popups') !== null;
+}
 
 export type ButtonVisualState = 'setup' | 'idle' | 'checking' | 'count' | 'clean' | 'collapsed' | 'off' | 'error' | 'unsupported';
 
@@ -227,6 +234,8 @@ export class FloatingButton {
     if (!this.box) return;
     const viewport: Viewport = { width: window.innerWidth || 0, height: window.innerHeight || 0 };
     const pos = computeButtonPosition(this.box, viewport);
+    // Never hide under Grammarly's corner widget: people run both while comparing them.
+    if (pos.anchor === 'inside' && grammarlyPresent()) pos.left = Math.max(this.box.left + BUTTON_INSET, pos.left - GRAMMARLY_CLEARANCE);
     this.position = pos;
     // The wrap grows leftwards from the button (translateX(-100%)), so its right edge is the button's right edge
     // plus the wrap padding.
