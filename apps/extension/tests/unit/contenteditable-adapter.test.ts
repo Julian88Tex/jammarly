@@ -442,6 +442,19 @@ describe('applyEdit: verification and ladder progression', () => {
 });
 
 describe('applyEdits', () => {
+  it('merges fixes in plain text into one write but never across markup', async () => {
+    const root = editor('<div>teh cat sat on teh <b>mat</b> tomorow</div>');
+    const a = adapterFor(root, defineProfile({ id: 's', matches: () => true, ladder: ['splice'] }));
+    const spy = vi.spyOn(a, 'applyEdit');
+    const text = a.getText();
+    const out = await settle(a.applyEdits([edit(text, 'teh', 'the'), edit(text, 'on teh', 'on the'), edit(text, 'tomorow', 'tomorrow')]), 3000);
+    expect(a.getText()).toBe('the cat sat on the mat tomorrow');
+    expect(out.applied).toHaveLength(3);
+    // "teh … on teh" share one plain text node; "tomorow" sits past the <b>, so it is its own write.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(root.querySelector('b')?.textContent).toBe('mat');
+  });
+
   it('applies three edits right-to-left and aborts on mismatch', async () => {
     const root = editor('<div>aaa bbb</div><div>ccc ddd</div>');
     const a = adapterFor(root, defineProfile({ id: 's', matches: () => true, ladder: ['splice'] }));

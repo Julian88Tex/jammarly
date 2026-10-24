@@ -136,31 +136,97 @@ export const NATIVE_UNDO_RUNGS: ReadonlySet<EditRung> = new Set<EditRung>(['exec
  * Apply edits right-to-left (descending start) so earlier offsets stay valid, verifying each through `applyOne`;
  * stop at the first edit that does not apply. Overlapping edits are skipped as 'mismatch' without aborting.
  * Edits after an abort are reported as skipped with the aborting edit's status.
+ *
+ * With `canMerge`, neighbouring edits on one line whose span the adapter can rewrite safely (`canMerge(start, end)`)
+ * go in as one write covering first to last, so a sentence with several fixes changes at once instead of word by
+ * word, each word waiting out its own verification. A merged write that does not stick leaves the field at its
+ * pre-edit text (runLadder guarantees it), and the group's edits are then tried one at a time.
  */
-export async function applyEditsRightToLeft(edits: readonly Edit[], applyOne: (edit: Edit) => Promise<EditOutcome>, readText: () => string): Promise<BatchEditOutcome> {
+export async function applyEditsRightToLeft(
+  edits: readonly Edit[],
+  applyOne: (edit: Edit) => Promise<EditOutcome>,
+  readText: () => string,
+  canMerge?: (start: number, end: number) => boolean,
+): Promise<BatchEditOutcome> {
   const ordered = [...edits].sort((a, b) => b.range.start - a.range.start || b.range.end - a.range.end);
-  const applied: Edit[] = [];
   const skipped: BatchEditOutcome['skipped'] = [];
-  let nativeUndoSteps = 0;
-  let floor = Number.POSITIVE_INFINITY; // start of the last edit applied; the next edit must end at or before it
-  for (let i = 0; i < ordered.length; i++) {
-    const edit = ordered[i]!;
+  const text = readText();
+  // Groups in descending order; each group's edits ascending.
+  const groups: Edit[][] = [];
+  let floor = Number.POSITIVE_INFINITY; // start of the last edit kept; the next edit must end at or before it
+  for (const edit of ordered) {
     if (edit.range.end > floor) {
       skipped.push({ edit, reason: 'mismatch' });
       continue;
     }
-    const outcome = await applyOne(edit);
-    if (outcome.status === 'applied') {
-      applied.push(edit);
-      floor = edit.range.start;
-      if (outcome.rung && NATIVE_UNDO_RUNGS.has(outcome.rung)) nativeUndoSteps++;
-      continue;
+    floor = edit.range.start;
+    const group = groups[groups.length - 1];
+    const groupEnd = group ? group[group.length - 1]!.range.end : 0;
+    const joinable =
+      group !== undefined &&
+      canMerge !== undefined &&
+      editMatchesText(text, edit) &&
+      editMatchesText(text, group[0]!) &&
+      !text.slice(edit.range.end, group[0]!.range.start).includes('\n') &&
+      canMerge(edit.range.start, groupEnd);
+    if (joinable) group.unshift(edit);
+    else groups.push([edit]);
+  }
+
+  const applied: Edit[] = [];
+  let nativeUndoSteps = 0;
+  const record = (outcome: EditOutcome, done: Edit[]): void => {
+    applied.push(...done);
+    if (outcome.rung && NATIVE_UNDO_RUNGS.has(outcome.rung)) nativeUndoSteps++;
+  };
+  const abort = (from: number, inGroup: Edit[], reason: EditOutcome['status']): void => {
+    for (const rest of inGroup) skipped.push({ edit: rest, reason });
+    for (const g of groups.slice(from + 1)) for (const rest of g) skipped.push({ edit: rest, reason });
+  };
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi]!;
+    if (group.length > 1) {
+      const snapshot = readText();
+      const outcome = await applyOne(mergeEdits(text, group));
+      if (outcome.status === 'applied') {
+        record(outcome, [...group].reverse());
+        continue;
+      }
+      // Only a field back at its pre-write text may take the edits one by one (see runLadder).
+      if (!textsEquivalent(readText(), snapshot)) {
+        abort(gi, group, outcome.status);
+        break;
+      }
     }
-    skipped.push({ edit, reason: outcome.status });
-    for (const rest of ordered.slice(i + 1)) skipped.push({ edit: rest, reason: outcome.status });
-    break;
+    // One at a time, right to left within the group.
+    let failed: EditOutcome['status'] | null = null;
+    const rev = [...group].reverse();
+    for (let i = 0; i < rev.length; i++) {
+      const outcome = await applyOne(rev[i]!);
+      if (outcome.status === 'applied') {
+        record(outcome, [rev[i]!]);
+        continue;
+      }
+      failed = outcome.status;
+      abort(gi, rev.slice(i), failed);
+      break;
+    }
+    if (failed) break;
   }
   return { applied, skipped, text: readText(), nativeUndoSteps };
+}
+
+/** One edit spanning a group of non-overlapping, ascending edits, composed against `text`. */
+export function mergeEdits(text: string, group: readonly Edit[]): Edit {
+  const start = group[0]!.range.start;
+  const end = group[group.length - 1]!.range.end;
+  let replacement = '';
+  let at = start;
+  for (const e of group) {
+    replacement += text.slice(at, e.range.start) + e.replacement;
+    at = e.range.end;
+  }
+  return { range: { start, end }, original: text.slice(start, end), replacement };
 }
 
 export { deepActiveElement } from '../detect';

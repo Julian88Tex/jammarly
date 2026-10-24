@@ -282,7 +282,19 @@ export class ContentEditableAdapter implements FieldAdapter {
   }
 
   applyEdits(edits: Edit[]): Promise<BatchEditOutcome> {
-    return applyEditsRightToLeft(edits, (e) => this.applyEdit(e), () => this.getText());
+    return applyEditsRightToLeft(edits, (e) => this.applyEdit(e), () => this.getText(), (start, end) => this.isPlainSpan(start, end));
+  }
+
+  /** The span holds only text (no links, bold, mentions or line breaks), so one write over it loses no markup. */
+  private isPlainSpan(start: number, end: number): boolean {
+    try {
+      const range = rangeFromOffsets(this.serialized(), start, end);
+      const nodes = range.cloneContents().childNodes;
+      for (const n of Array.from(nodes)) if (n.nodeType !== Node.TEXT_NODE) return false;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async runRung(rung: Rung, edit: Edit, isDeletion: boolean): Promise<RunResult> {

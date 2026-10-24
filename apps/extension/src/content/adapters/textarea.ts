@@ -309,7 +309,7 @@ export class TextareaAdapter implements FieldAdapter {
   }
 
   applyEdits(edits: Edit[]): Promise<BatchEditOutcome> {
-    return applyEditsRightToLeft(edits, (e) => this.applyEdit(e), () => this.element.value);
+    return applyEditsRightToLeft(edits, (e) => this.applyEdit(e), () => this.element.value, () => true);
   }
 
   /** focus + setSelectionRange + execCommand: fires a native `input` and leaves one undo step. */

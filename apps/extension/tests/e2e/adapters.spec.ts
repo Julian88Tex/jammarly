@@ -135,7 +135,7 @@ test.describe('textarea adapter', () => {
     await expect(page.locator('#subject')).toHaveValue("Meeting notes for tomorrow's standup");
   });
 
-  test('applyEdits applies three edits right-to-left with one native undo step each', async ({ page }) => {
+  test('applyEdits writes three fixes on one line as a single native undo step', async ({ page }) => {
     await open(page, 'textarea.html');
     const result = await page.evaluate(async () => {
       const api = window.__jammarlyAdapters!;
@@ -153,7 +153,8 @@ test.describe('textarea adapter', () => {
     });
     expect(result.outcome.applied).toHaveLength(3);
     expect(result.outcome.skipped).toEqual([]);
-    expect(result.outcome.nativeUndoSteps).toBe(3);
+    // One line: the fixes go in as one write, so they appear together and one Ctrl+Z reverts them together.
+    expect(result.outcome.nativeUndoSteps).toBe(1);
     expect(result.outcome.text).toBe(result.expected);
     await expect(page.locator('#main')).toHaveValue(result.expected);
   });
