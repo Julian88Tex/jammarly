@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: framework-like editors</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 15px; line-height: 1.6; margin: 40px; }
+  .editor { width: 560px; min-height: 60px; padding: 14px; border: 1px solid #bbb; border-radius: 6px; outline: none; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Framework-like editors</h1>
+<p>Two model-driven editors in the style of Slate/Lexical: a MutationObserver reverts any DOM change the model
+did not make, and <code>beforeinput</code> (insertReplacementText / deleteContentBackward) is applied through the
+model and re-rendered asynchronously, like a React commit. The first carries the Slate marker; the second has
+no framework marker, so the generic ladder tries execCommand first and must recover from the revert.</p>
+
+<h2>Slate-like (data-slate-editor)</h2>
+<div id="slate" class="editor" contenteditable="true" data-slate-editor="true" role="textbox" aria-multiline="true"></div>
+<pre id="model-slate"></pre>
+
+<h2>Reverting editor without a marker</h2>
+<div id="reverting" class="editor" contenteditable="true" role="textbox" aria-multiline="true"></div>
+<pre id="model-reverting"></pre>
+
+<script>
+  function makeEditor(root, modelEl, initial) {
+    let state = initial;
+    let applying = false;
+    const block = document.createElement('div');
+    block.setAttribute('data-slate-node', 'element');
+    const leaf = document.createElement('span');
+    leaf.setAttribute('data-slate-node', 'text');
+    const str = document.createElement('span');
+    str.setAttribute('data-slate-string', 'true');
+    leaf.appendChild(str);
+    block.appendChild(leaf);
+    root.appendChild(block);
+    const stats = { reverts: 0, beforeinputs: 0 };
+
+    function render() {
+      applying = true;
+      str.textContent = state; // replaces the text node, like a re-render
+      modelEl.textContent = 'model: ' + JSON.stringify(state);
+      observer.takeRecords();
+      applying = false;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (applying) return;
+      stats.reverts++;
+      render(); // revert foreign DOM writes (Lexical/Slate behaviour)
+    });
+    render();
+    observer.observe(root, { childList: true, characterData: true, subtree: true });
+
+    root.addEventListener('beforeinput', (ev) => {
+      const types = ['insertText', 'insertReplacementText', 'deleteContentBackward', 'deleteContentForward'];
+      if (!types.includes(ev.inputType)) return;
+      const ranges = ev.getTargetRanges();
+      const sel = document.getSelection();
+      const r = ranges[0] || (sel && sel.rangeCount ? sel.getRangeAt(0) : null);
+      if (!r) return;
+      const text = str.firstChild;
+      if (r.startContainer !== text || r.endContainer !== text) return;
+      const data = ev.inputType.startsWith('delete') ? '' : (ev.dataTransfer && ev.dataTransfer.getData('text/plain')) || ev.data || '';
+      ev.preventDefault();
+      stats.beforeinputs++;
+      const start = r.startOffset;
+      state = state.slice(0, start) + data + state.slice(r.endOffset);
+      // Commit asynchronously, like a React re-render after a state update.
+      Promise.resolve().then(() => {
+        render();
+        const s = document.getSelection();
+        if (s && str.firstChild) {
+          const caret = document.createRange();
+          caret.setStart(str.firstChild, start + data.length);
+          caret.collapse(true);
+          s.removeAllRanges();
+          s.addRange(caret);
+        }
+      });
+    });
+
+    return {
+      get state() { return state; },
+      get stats() { return stats; },
+    };
+  }
+
+  window.__editors = {
+    slate: makeEditor(document.getElementById('slate'), document.getElementById('model-slate'), 'Their going to the store tomorow.'),
+    reverting: makeEditor(document.getElementById('reverting'), document.getElementById('model-reverting'), 'We was hoping you could of came.'),
+  };
+</script>
+</body>
+</html>
