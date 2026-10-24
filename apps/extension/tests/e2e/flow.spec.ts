@@ -27,7 +27,7 @@ const CONSENTED_PROFILE = {
   },
 };
 
-/** `showFloatingButton: 'default'` leaves the device default (off). */
+/** `showFloatingButton: 'default'` leaves the device default (on). */
 async function seed(context: import('@playwright/test').BrowserContext, extensionId: string, showFloatingButton: boolean | 'default' = true): Promise<void> {
   const id = PINNED_ID || extensionId;
   const page = await context.newPage();
@@ -166,7 +166,7 @@ test.describe('in-page flow (mock engine)', () => {
     await expect.poll(async () => underlines.count(), { timeout: 5_000 }).toBe(0);
   });
   test('the sentence card applies every fix of the hovered sentence in one go (floating button hidden)', async ({ context, extensionId, fixtureUrl }) => {
-    await seed(context, extensionId, 'default'); // device default: no floating button
+    await seed(context, extensionId, false); // floating button turned off in settings
     const page = await context.newPage();
     await page.goto(fixtureUrl('textarea.html'));
     await expect(page.locator('html')).toHaveAttribute('data-jammarly', 'loaded');

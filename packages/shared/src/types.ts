@@ -427,7 +427,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   fastModel: 'claude-haiku-5-5',
   apiKey: '',
   debounceMs: 700,
-  showFloatingButton: false,
+  showFloatingButton: true,
   showUnderlines: true,
   colorblindMode: false,
   gdocsInline: 'auto',
