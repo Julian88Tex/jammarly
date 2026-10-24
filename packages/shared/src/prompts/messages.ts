@@ -166,7 +166,7 @@ export const DEFAULT_DIALECT: Dialect = 'en-US';
 /** Blocks per call by default: a whole email in one call (the worker shards longer fields by words). */
 export const DEFAULT_MAX_BLOCKS_PER_REQUEST = 40;
 export const CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
-export const CUSTOM_INSTRUCTIONS_PREAMBLE = 'The user asked for these preferences; apply them only where they do not conflict with the contract:';
+export const CUSTOM_INSTRUCTIONS_PREAMBLE = "The writer's own style profile. Make suggestions sound like this writer, never flag text for matching it, and apply it only where it does not conflict with the contract:";
 
 const AUDIENCES: readonly Audience[] = ['general', 'knowledgeable', 'expert'];
 const FORMALITIES: readonly Formality[] = ['informal', 'neutral', 'formal'];

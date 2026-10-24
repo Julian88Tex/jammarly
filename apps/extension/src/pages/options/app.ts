@@ -14,7 +14,7 @@ import { watchTheme } from '../common/theme';
 import { createToastHost, type ToastHandle } from '../common/ui';
 import { renderOptions } from './view';
 
-export const ROUTES = ['welcome', 'general', 'suggestions', 'sites', 'dictionary', 'sync', 'privacy', 'advanced'] as const;
+export const ROUTES = ['welcome', 'general', 'style', 'sites', 'dictionary', 'advanced'] as const;
 export type Route = (typeof ROUTES)[number];
 
 export const MODEL_CHOICES = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] as const;
@@ -40,7 +40,7 @@ export interface OptionsState {
   pairedDeviceId: string | null;
   keyTest: KeyTestState;
   keySavedHint: string | null;
-  confirm: 'unpair' | 'withdraw' | null;
+  confirm: 'unpair' | 'withdraw' | 'reset-style' | null;
   errors: Record<string, string>;
   busy: Record<string, boolean>;
   /** Welcome step 3 choice (kept so the radio stays put after a write). */
@@ -87,6 +87,16 @@ export interface OptionsActions {
   setDialect(dialect: Dialect): Promise<boolean>;
   setCategories(categories: Record<SuggestionCategory, boolean>): Promise<boolean>;
   saveCustomInstructions(text: string): Promise<boolean>;
+  /** Saves whose style it is and the style itself together. */
+  saveWritingStyle(owner: string, style: string): Promise<boolean>;
+  /** Downloads the style as a JSON file someone can import; returns the file text. */
+  exportWritingStyle(): string;
+  /** Replaces the style with one from an exported file; false when the file is not a style export. */
+  importWritingStyle(text: string): Promise<boolean>;
+  /** Clears the style and its owner so someone else can start fresh. */
+  resetWritingStyle(): Promise<boolean>;
+  requestResetStyle(): void;
+  confirmResetStyle(): Promise<void>;
   unmuteRule(rule: string): Promise<boolean>;
   // sites
   addDisabledSite(input: string): Promise<boolean>;
@@ -162,6 +172,9 @@ export function consentMissing(profile: ProfileDocument | null): boolean {
 export function routeFromHash(hash: string, profile: ProfileDocument | null): Route {
   const raw = hash.replace(/^#\/?/, '').trim().toLowerCase();
   if (isRoute(raw)) return raw;
+  // Pages that were folded into others keep working as links.
+  const moved: Record<string, Route> = { suggestions: 'style', sync: 'advanced', privacy: 'advanced' };
+  if (moved[raw]) return moved[raw];
   return consentMissing(profile) ? 'welcome' : 'general';
 }
 
@@ -194,6 +207,35 @@ export function parseWordList(text: string): string[] {
     if (w && !/\s/.test(w)) out.add(w);
   }
   return Array.from(out);
+}
+
+export const STYLE_OWNER_MAX = 80;
+const STYLE_FILE_KIND = 'jammarly-writing-style';
+
+/** The export file for a writing style: small, readable JSON that names whose style it is. */
+export function writingStyleFile(owner: string, style: string): string {
+  return `${JSON.stringify({ kind: STYLE_FILE_KIND, version: 1, owner, style }, null, 2)}\n`;
+}
+
+/** Reads an exported style; plain text is accepted too, as a style with no name. Null when it is neither. */
+export function parseWritingStyleFile(text: string): { owner: string; style: string } | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.startsWith('{')) {
+    try {
+      const v = JSON.parse(trimmed) as { kind?: unknown; owner?: unknown; style?: unknown };
+      if (v.kind !== STYLE_FILE_KIND || typeof v.style !== 'string') return null;
+      return { owner: typeof v.owner === 'string' ? v.owner.slice(0, STYLE_OWNER_MAX) : '', style: v.style.slice(0, CUSTOM_INSTRUCTIONS_MAX) };
+    } catch {
+      return null;
+    }
+  }
+  return { owner: '', style: trimmed.slice(0, CUSTOM_INSTRUCTIONS_MAX) };
+}
+
+function slugFor(owner: string): string {
+  const slug = owner.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return slug ? `-${slug}` : '';
 }
 
 export function validateApiKey(key: string): string | null {
@@ -460,6 +502,57 @@ export function mountOptions(root: HTMLElement, opts: MountOptionsOpts = {}): Op
       const ok = await writeOps([setOp('settings.customInstructions', text)]);
       if (ok) drafts.delete('customInstructions');
       return ok;
+    },
+    async saveWritingStyle(owner, style) {
+      if (style.length > CUSTOM_INSTRUCTIONS_MAX) {
+        setError('customInstructions', `Keep it under ${CUSTOM_INSTRUCTIONS_MAX} characters.`);
+        return false;
+      }
+      setError('customInstructions', null);
+      const name = owner.trim().slice(0, STYLE_OWNER_MAX);
+      if (name !== (store.get().settings?.styleOwner ?? '')) {
+        const res = await request({ type: 'set-settings', patch: { styleOwner: name } });
+        if (disposed) return false;
+        if (!res.ok) return fail(res);
+        await reloadSettings();
+      }
+      const ok = await writeOps([setOp('settings.customInstructions', style)], 'Writing style saved');
+      if (ok) {
+        drafts.delete('customInstructions');
+        drafts.delete('styleOwner');
+      }
+      return ok;
+    },
+    exportWritingStyle() {
+      const text = writingStyleFile(store.get().settings?.styleOwner ?? '', store.get().profile?.settings.customInstructions.value ?? '');
+      download(`jammarly-style${slugFor(store.get().settings?.styleOwner ?? '')}.json`, text);
+      return text;
+    },
+    async importWritingStyle(text) {
+      const parsed = parseWritingStyleFile(text);
+      if (!parsed) {
+        toast.show("That file isn't a Jammarly writing style", { tone: 'error' });
+        return false;
+      }
+      drafts.delete('customInstructions');
+      drafts.delete('styleOwner');
+      return actions.saveWritingStyle(parsed.owner, parsed.style);
+    },
+    async resetWritingStyle() {
+      drafts.delete('customInstructions');
+      drafts.delete('styleOwner');
+      const res = await request({ type: 'set-settings', patch: { styleOwner: '' } });
+      if (disposed) return false;
+      if (!res.ok) return fail(res);
+      await reloadSettings();
+      return writeOps([setOp('settings.customInstructions', '')], 'Writing style cleared');
+    },
+    requestResetStyle() {
+      store.update((s) => ({ ...s, confirm: 'reset-style' }));
+    },
+    async confirmResetStyle() {
+      store.update((s) => ({ ...s, confirm: null }));
+      await actions.resetWritingStyle();
     },
     unmuteRule(rule) {
       return writeOps([removeOp('rules.muted', rule)], 'Rule turned back on');

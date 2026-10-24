@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProfileOp, RuntimeRequest } from '@jammarly/shared/types';
 import { defaultProfile, type ProfileDocument } from '@jammarly/shared/profile';
-import { liveValues, mountOptions, parseWordList, routeFromHash, validatePairing, type OptionsApp } from '../../src/pages/options/app';
+import { liveValues, mountOptions, parseWordList, parseWritingStyleFile, routeFromHash, validatePairing, writingStyleFile, type OptionsApp } from '../../src/pages/options/app';
 import { ruleTitle } from '../../src/pages/options/view';
 import { fakeSettings, fakeSync, flush, installChromeMock, type ChromeMock } from '../../src/pages/testing/chrome-mock';
 
@@ -92,8 +92,10 @@ describe('options: router', () => {
     expect(root.querySelector('h1')?.textContent).toBe('Personal dictionary');
     hash = '#privacy';
     window.dispatchEvent(new Event('hashchange'));
-    expect(root.querySelector('h1')?.textContent).toBe('Privacy');
-    for (const route of ['suggestions', 'sites', 'sync', 'advanced', 'general']) {
+    expect(root.querySelector('h1')?.textContent).toBe('Advanced');
+    // The nav is down to the few pages an everyday user needs.
+    expect(Array.from(root.querySelectorAll('.jm-nav-link')).map((a) => a.textContent)).toEqual(['Settings', 'Writing style', 'Sites', 'Dictionary', 'Advanced']);
+    for (const route of ['style', 'sites', 'advanced', 'general']) {
       click(`[data-route="${route}"]`);
       expect(root.querySelector('.jm-nav-link.is-active')?.getAttribute('data-route')).toBe(route);
     }
@@ -199,7 +201,7 @@ describe('options: welcome', () => {
     expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.checkOptedOutFields', value: false, hlc: '' }]);
     click('[data-focus-key="welcome:finish"]');
     expect(hash).toBe('#general');
-    expect(root.querySelector('h1')?.textContent).toBe('General');
+    expect(root.querySelector('h1')?.textContent).toBe('Settings');
   });
 });
 
@@ -212,6 +214,7 @@ describe('options: general', () => {
     expect(root.querySelector('.jm-toast')?.textContent).toBe('Saved');
     expect(root.querySelector('[data-usage="today"]')?.textContent).toContain('$0.01');
     expect(root.querySelector('[data-usage="month"]')?.textContent).toContain('$0.42');
+    app!.actions.navigate('advanced');
     const slider = root.querySelector<HTMLInputElement>('[data-focus-key="general:debounce"]')!;
     expect(slider.min).toBe('300');
     expect(slider.max).toBe('2000');
@@ -222,7 +225,7 @@ describe('options: general', () => {
   });
 
   it('unpaired: mode and model write device settings; paired: profile ops with a synced note', async () => {
-    await mount('#general');
+    await mount('#advanced');
     const economy = root.querySelector<HTMLInputElement>('[data-focus-key="general:mode:economy"]')!;
     economy.checked = true;
     economy.dispatchEvent(new Event('change'));
@@ -240,7 +243,7 @@ describe('options: general', () => {
     mock.settings = fakeSettings({ paired: true, appOrigin: 'https://jammarly.example' });
     mock.sync = fakeSync();
     const before = mock.requests.length;
-    await mount('#general');
+    await mount('#advanced');
     expect(root.textContent).toContain('synced across devices');
     const fast = root.querySelector<HTMLSelectElement>('[data-focus-key="general:fastModel"]')!;
     fast.value = 'claude-sonnet-5-5';
@@ -277,7 +280,7 @@ describe('options: general', () => {
   });
 
   it('a custom model id can be typed and is saved on Enter', async () => {
-    await mount('#general');
+    await mount('#advanced');
     const model = root.querySelector<HTMLSelectElement>('[data-focus-key="general:model"]')!;
     model.value = '__custom__';
     model.dispatchEvent(new Event('change'));
@@ -289,34 +292,37 @@ describe('options: general', () => {
 });
 
 describe('options: suggestions, sites, dictionary', () => {
-  it('goals, dialect, categories and custom instructions write set ops', async () => {
-    await mount('#suggestions');
+  it('goals, dialect, categories and the writing style write set ops', async () => {
+    await mount('#advanced');
     const formality = root.querySelector<HTMLSelectElement>('[data-focus-key="goals:formality"]')!;
     formality.value = 'formal';
     formality.dispatchEvent(new Event('change'));
     await flush();
     expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.goals', value: { audience: 'general', formality: 'formal', domain: 'general', intent: 'inform' }, hlc: '' }]);
+    app!.actions.navigate('style');
     const dialect = root.querySelector<HTMLSelectElement>('[data-focus-key="dialect"]')!;
     dialect.value = 'en-GB';
     dialect.dispatchEvent(new Event('change'));
     await flush();
     expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.dialect', value: 'en-GB', hlc: '' }]);
+    app!.actions.navigate('general');
     click('[data-focus-key="category:engagement"]');
     await flush();
     expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.categories', value: { correctness: true, clarity: true, engagement: false, delivery: true }, hlc: '' }]);
+    app!.actions.navigate('style');
     const area = root.querySelector<HTMLTextAreaElement>('[data-focus-key="customInstructions"]')!;
     area.value = 'x'.repeat(2001);
     area.dispatchEvent(new Event('input'));
-    click('[data-focus-key="customInstructions:save"]');
+    click('[data-focus-key="style:save"]');
     await flush();
     expect(root.querySelector('.jm-field-error')?.textContent).toContain('2000');
     const area2 = root.querySelector<HTMLTextAreaElement>('[data-focus-key="customInstructions"]')!;
     area2.value = 'Prefer short sentences.';
     area2.dispatchEvent(new Event('input'));
-    click('[data-focus-key="customInstructions:save"]');
+    click('[data-focus-key="style:save"]');
     await flush();
     expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.customInstructions', value: 'Prefer short sentences.', hlc: '' }]);
-    expect(root.textContent).toContain('preferences, not commands');
+    expect(root.textContent).toContain('sound like the person described here');
   });
 
   it('lists live muted rules with titles and unmutes with a remove op', async () => {
@@ -327,7 +333,7 @@ describe('options: suggestions, sites, dictionary', () => {
       { value: 'mystery_rule', addedHlc: '0000000000004-0000-dev' },
     ];
     mock.profile = p;
-    await mount('#suggestions');
+    await mount('#advanced');
     const list = root.querySelector('[data-list="muted"]')!;
     expect(list.querySelectorAll('.jm-list-item').length).toBe(2);
     expect(list.textContent).toContain('Use the active voice');
@@ -357,6 +363,7 @@ describe('options: suggestions, sites, dictionary', () => {
     click('[data-focus-key="disabled:remove:twitter.com"]');
     await flush();
     expect(opsSent()).toContainEqual([{ op: 'remove', path: 'sites.disabled', value: 'twitter.com', hlc: '' }]);
+    app!.actions.navigate('advanced');
     type('[data-focus-key="input:ignoreOptOutHost"]', 'discord.com');
     click('[data-focus-key="sites:add-ignore"]');
     await flush();
@@ -463,6 +470,41 @@ describe('options: sync and privacy', () => {
   });
 });
 
+describe('options: writing style', () => {
+  it('saves whose style it is with the style, exports it, imports someone else\'s and resets', async () => {
+    await mount('#style');
+    expect(root.querySelector('h1')?.textContent).toBe('Your writing style');
+    type('[data-focus-key="input:styleOwner"]', 'Julian');
+    const area = root.querySelector<HTMLTextAreaElement>('[data-focus-key="customInstructions"]')!;
+    area.value = 'Short, direct sentences. Never use em dashes.';
+    area.dispatchEvent(new Event('input'));
+    click('[data-focus-key="style:save"]');
+    await flush();
+    expect(settingsPatches()).toContainEqual({ styleOwner: 'Julian' });
+    expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.customInstructions', value: 'Short, direct sentences. Never use em dashes.', hlc: '' }]);
+    expect(root.querySelector('.jm-card-title')?.textContent).toBe('Julian’s style');
+
+    const exported = app!.actions.exportWritingStyle();
+    expect(downloads.at(-1)?.filename).toBe('jammarly-style-julian.json');
+    // The test worker does not apply profile ops, so the exported style is the loaded (empty) one.
+    expect(parseWritingStyleFile(exported)).toEqual({ owner: 'Julian', style: '' });
+    expect(parseWritingStyleFile(writingStyleFile('Julian', 'Short.'))).toEqual({ owner: 'Julian', style: 'Short.' });
+    expect(parseWritingStyleFile('Plain text style')).toEqual({ owner: '', style: 'Plain text style' });
+
+    expect(await app!.actions.importWritingStyle(writingStyleFile('Sam', 'Warm and chatty.'))).toBe(true);
+    expect(settingsPatches()).toContainEqual({ styleOwner: 'Sam' });
+    expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.customInstructions', value: 'Warm and chatty.', hlc: '' }]);
+    expect(await app!.actions.importWritingStyle('{"not":"a style"}')).toBe(false);
+
+    click('[data-focus-key="style:reset"]');
+    expect(root.textContent).toContain('Export it first');
+    await app!.actions.confirmResetStyle();
+    await flush();
+    expect(settingsPatches()).toContainEqual({ styleOwner: '' });
+    expect(opsSent()).toContainEqual([{ op: 'set', path: 'settings.customInstructions', value: '', hlc: '' }]);
+  });
+});
+
 describe('options: resilience', () => {
   it('renders the welcome page with an error banner when the worker never answers, and writes report failures', async () => {
     mock.respond = () => undefined;
@@ -480,7 +522,7 @@ describe('options: resilience', () => {
   it('survives garbage replies and rejected promises without throwing', async () => {
     mock.respond = (req) => (req.type === 'get-profile' ? Promise.reject(new Error('nope')) : { weird: 1 });
     await mount('#general');
-    expect(root.querySelector('h1')?.textContent).toBe('General');
+    expect(root.querySelector('h1')?.textContent).toBe('Settings');
     expect(root.querySelector('.jm-notice-error')).not.toBeNull();
     expect(app!.store.get().profile).toBeNull();
     click('[data-route="dictionary"]');
@@ -494,7 +536,7 @@ describe('adversarial', () => {
     await mount('#general');
     expect(root.querySelector('.jm-notice-error')?.textContent).toContain('Storage is locked.');
     expect(app!.store.get().profile).toBeNull();
-    for (const route of ['suggestions', 'sites', 'dictionary', 'sync', 'privacy', 'advanced', 'welcome', 'general'] as const) {
+    for (const route of ['style', 'sites', 'dictionary', 'advanced', 'welcome', 'general'] as const) {
       app!.actions.navigate(route);
       expect(root.querySelector('h1')).not.toBeNull();
     }
@@ -573,7 +615,7 @@ describe('adversarial', () => {
     expect(root.textContent).toContain('You agreed on');
     expect(root.querySelector('[data-focus-key="welcome:agree"]')).toBeNull();
     // Later toggles keep the consent timestamp and the other values.
-    app!.actions.navigate('privacy');
+    app!.actions.navigate('advanced');
     click('[data-focus-key="privacy:learning"]');
     await flush();
     const last = opsSent().at(-1)![0]!;
@@ -613,7 +655,7 @@ describe('adversarial', () => {
     area.dispatchEvent(new Event('input'));
     expect(root.querySelector('.jm-counter')?.textContent).toBe('2000 / 2000');
     expect(root.querySelector('.jm-counter')?.classList.contains('is-over')).toBe(false);
-    click('[data-focus-key="customInstructions:save"]');
+    click('[data-focus-key="style:save"]');
     await flush();
     expect(opsSent().at(-1)).toEqual([{ op: 'set', path: 'settings.customInstructions', value: limit, hlc: '' }]);
     const area2 = root.querySelector<HTMLTextAreaElement>('[data-focus-key="customInstructions"]')!;
@@ -621,7 +663,7 @@ describe('adversarial', () => {
     area2.dispatchEvent(new Event('input'));
     expect(root.querySelector('.jm-counter')?.classList.contains('is-over')).toBe(true);
     const before = opsSent().length;
-    click('[data-focus-key="customInstructions:save"]');
+    click('[data-focus-key="style:save"]');
     await flush();
     expect(opsSent().length).toBe(before);
     expect(root.querySelector('.jm-field-error')?.textContent).toBe('Keep it under 2000 characters.');
@@ -665,7 +707,7 @@ describe('adversarial', () => {
     expect(app!.store.get().route).toBe('welcome');
     expect(app!.store.get().profile?.settings.privacy.value.consentAt).toBeNull();
     expect(app!.store.get().profile?.settings.goals.value).toEqual({ audience: 'general', formality: 'formal', domain: 'general', intent: 'inform' });
-    for (const route of ['general', 'suggestions', 'sites', 'dictionary', 'sync', 'privacy', 'advanced'] as const) {
+    for (const route of ['general', 'style', 'sites', 'dictionary', 'advanced'] as const) {
       app!.actions.navigate(route);
       expect(root.querySelector('h1')?.textContent?.length).toBeGreaterThan(0);
     }
@@ -684,7 +726,7 @@ describe('adversarial', () => {
     expect(root.textContent).toContain('javascript:alert(1)//');
     const hrefs = Array.from(root.querySelectorAll('a[href]')).map((a) => a.getAttribute('href') ?? '');
     expect(hrefs.some((h) => /^\s*javascript:/i.test(h))).toBe(false);
-    app!.actions.navigate('privacy');
+    app!.actions.navigate('advanced');
     const links = Array.from(root.querySelectorAll('a[href]')).map((a) => a.getAttribute('href') ?? '');
     expect(links.some((h) => /javascript:/i.test(h))).toBe(false);
     expect(root.textContent).toContain('not paired');

@@ -28,6 +28,7 @@ export const SettingsPatchSchema = z
     colorblindMode: z.boolean(),
     gdocsInline: z.enum(['auto', 'off']),
     dailyBudgetUsd: z.number().min(0).max(10_000),
+    styleOwner: z.string().max(80).transform((s) => s.trim()),
   })
   .partial()
   .strict();

@@ -73,6 +73,7 @@ export function fakeSettings(patch: Partial<PublicDeviceSettings> = {}): PublicD
     colorblindMode: false,
     gdocsInline: 'auto',
     dailyBudgetUsd: 2,
+    styleOwner: '',
     hasApiKey: true,
     paired: false,
     appOrigin: null,

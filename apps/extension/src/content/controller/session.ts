@@ -112,7 +112,9 @@ export function computeStatus(input: StatusInput): FieldStatus {
 }
 
 /** Rounds "Accept everything" runs at most; each round re-checks with Claude, so this also caps the cost. */
-const MAX_SWEEP_ROUNDS = 3;
+const MAX_SWEEP_ROUNDS = 6;
+/** Longest Accept everything waits for a check already under way before applying what it has. */
+const SETTLE_TIMEOUT_MS = 20_000;
 
 function sweepDoneText(total: number, rounds: number): string {
   return rounds > 1 ? `Fixed ${total} issue${total === 1 ? '' : 's'} in ${rounds} rounds` : `Applied ${total} change${total === 1 ? '' : 's'}`;
@@ -145,7 +147,9 @@ export class FieldSession {
   private readonly checked = new Map<string, CheckPass>();
   private everChecked = false;
   /** "Accept everything" keeps going: apply, re-check the changed text, apply that round's fixes, until clean. */
-  private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; txIds: string[]; pass?: RequestedPass } | null = null;
+  private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; txIds: string[]; seen: string[]; pass?: RequestedPass } | null = null;
+  /** Accept everything presses waiting for the in-flight checks to land. */
+  private settleWaiters: (() => void)[] = [];
   /** A finished multi-round sweep: its toast's Undo (keyed by the last round's transaction) reverts every round. */
   private readonly sweepGroups = new Map<string, string[]>();
   private deepScheduled = false;
@@ -468,6 +472,12 @@ export class FieldSession {
   async acceptAll(scope: AcceptAllScope, via: FeedbackVia = 'bulk', continuing = false): Promise<number> {
     if (this.disposed) return 0;
     if (!continuing) this.sweep = null;
+    // One press should get everything: let a check that is under way (or owed) land first.
+    if (!continuing && scope.suggestionIds === undefined) {
+      await this.settleChecks();
+      if (this.disposed) return 0;
+    }
+    const textBefore = hashText(this.model.text);
     const result = await this.apply.acceptAll(scope);
     if (this.disposed) return 0;
     if (result.transaction && result.report) {
@@ -486,9 +496,10 @@ export class FieldSession {
       const round = continuing && this.sweep ? this.sweep.round + 1 : 1;
       const total = (continuing && this.sweep ? this.sweep.total : 0) + n;
       const txIds = [...(continuing && this.sweep ? this.sweep.txIds : []), tx.id];
+      const seen = [...(continuing && this.sweep ? this.sweep.seen : []), textBefore];
       if (sweeping && round < MAX_SWEEP_ROUNDS) {
         // No toast until the sweep ends: one toast reports the total, and its Undo reverts every round.
-        this.sweep = { scope, round, total, lastTx: tx.id, txIds };
+        this.sweep = { scope, round, total, lastTx: tx.id, txIds, seen };
       } else {
         this.sweep = null;
         this.rememberSweep(txIds);
@@ -531,11 +542,35 @@ export class FieldSession {
     const sweep = this.sweep;
     if (!sweep || this.disposed) return;
     this.runLocalRules();
-    if (selectAcceptAll(this.store.all, sweep.scope).selected.length === 0) {
+    // Back at a text an earlier round started from: two fixes are undoing each other, so stop here.
+    if (sweep.seen.includes(hashText(this.model.text)) || selectAcceptAll(this.store.all, sweep.scope).selected.length === 0) {
       this.finishSweep();
       return;
     }
     await this.acceptAll(sweep.scope, 'bulk', true);
+  }
+
+  /** Requests the full check of any text it has not covered yet and waits (bounded) for every check in flight. */
+  private async settleChecks(): Promise<void> {
+    if (!this.canCheck()) return;
+    const deep = passFor('deep', this.deps.getConfig().mode);
+    if (PASS_RANK[this.checkedBy()] < PASS_RANK[deep]) this.requestPass(deep, 'after-apply');
+    if (this.inflightPasses.length === 0) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, SETTLE_TIMEOUT_MS);
+      function done(): void {
+        clearTimeout(timer);
+        resolve();
+      }
+      this.settleWaiters.push(done);
+    });
+  }
+
+  private releaseSettleWaiters(): void {
+    if (this.inflightPasses.length > 0 && !this.disposed) return;
+    const waiters = this.settleWaiters;
+    this.settleWaiters = [];
+    for (const w of waiters) w();
   }
 
   private finishSweep(): void {
@@ -846,6 +881,8 @@ export class FieldSession {
       this.deps.setOutstanding(this.outstandingKey(pass), false);
     }
     this.deepScheduled = false;
+    // Waiters resume after this result is in the store (their continuations run once this returns).
+    this.releaseSettleWaiters();
     if (result.usage) this.usage = result.usage;
     // A failed or cancelled sweep re-check ends the sweep with what it has applied so far.
     if (result.error && isCurrent && this.sweep && pass === this.sweep.pass) this.finishSweep();
@@ -905,6 +942,7 @@ export class FieldSession {
     if (passes.length === 0) return;
     for (const p of passes) this.deps.setOutstanding(this.outstandingKey(p), false);
     this.inflight = {};
+    this.releaseSettleWaiters();
     this.deps.send({ type: 'cancel', fieldId: this.fieldId });
   }
 

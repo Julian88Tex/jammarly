@@ -157,6 +157,7 @@ export function normalizeSettings(raw: unknown): DeviceSettings {
       case 'model':
       case 'fastModel':
       case 'apiKey':
+      case 'styleOwner':
         if (typeof v === 'string') out[key] = v;
         break;
       case 'debounceMs':

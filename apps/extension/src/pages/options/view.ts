@@ -16,23 +16,19 @@ import { CUSTOM_INSTRUCTIONS_MAX, DEBOUNCE_MAX, DEBOUNCE_MIN, MODEL_CHOICES, ROU
 
 const NAV_LABELS: Record<Route, string> = {
   welcome: 'Welcome',
-  general: 'General',
-  suggestions: 'Suggestions',
+  general: 'Settings',
+  style: 'Writing style',
   sites: 'Sites',
   dictionary: 'Dictionary',
-  sync: 'Sync',
-  privacy: 'Privacy',
   advanced: 'Advanced',
 };
 
 const SECTION_TITLES: Record<Route, string> = {
   welcome: 'Welcome to Jammarly',
-  general: 'General',
-  suggestions: 'Suggestions',
+  general: 'Settings',
+  style: 'Your writing style',
   sites: 'Sites',
   dictionary: 'Personal dictionary',
-  sync: 'Sync with the web app',
-  privacy: 'Privacy',
   advanced: 'Advanced',
 };
 
@@ -111,16 +107,12 @@ function renderSection(state: OptionsState, actions: OptionsActions): HTMLElemen
       return renderWelcome(state, actions);
     case 'general':
       return renderGeneral(state, actions);
-    case 'suggestions':
-      return renderSuggestions(state, actions);
+    case 'style':
+      return renderStyle(state, actions);
     case 'sites':
       return renderSites(state, actions);
     case 'dictionary':
       return renderDictionary(state, actions);
-    case 'sync':
-      return renderSync(state, actions);
-    case 'privacy':
-      return renderPrivacy(state, actions);
     case 'advanced':
       return renderAdvanced(state, actions);
   }
@@ -289,18 +281,83 @@ function renderKeyTest(state: OptionsState): HTMLElement | null {
 function renderGeneral(state: OptionsState, actions: OptionsActions): HTMLElement {
   const settings = state.settings;
   const profile = state.profile;
-  const paired = settings?.paired === true;
   const wrap = h('div', { class: 'jm-stack' });
   const disabled = !settings;
 
   wrap.appendChild(
     card(
       null,
-      switchControl({ checked: settings?.enabled ?? true, label: 'Check text with Jammarly', description: 'Turn everything off without uninstalling.', disabled, onChange: (on) => void actions.setDeviceSetting({ enabled: on }), focusKey: 'general:enabled' }),
+      switchControl({ checked: settings?.enabled ?? true, label: 'Check my writing', description: 'Turn Jammarly off everywhere without uninstalling it.', disabled, onChange: (on) => void actions.setDeviceSetting({ enabled: on }), focusKey: 'general:enabled' }),
     ),
   );
 
-  // Engine mode + models
+  const categories = profile?.settings.categories.value ?? { correctness: true, clarity: true, engagement: true, delivery: true };
+  wrap.appendChild(
+    card(
+      'What to check',
+      CATEGORIES.map((category: SuggestionCategory) =>
+        h(
+          'div',
+          { class: 'jm-category-row' },
+          categoryDot(category),
+          switchControl({ checked: categories[category] !== false, label: CATEGORY_LABELS[category], description: CATEGORY_DESCRIPTIONS[category], disabled: !profile, onChange: (on) => void actions.setCategories({ ...categories, [category]: on }), focusKey: `category:${category}` }),
+        ),
+      ),
+    ),
+  );
+
+  wrap.appendChild(
+    card(
+      'Look',
+      switchControl({ checked: settings?.showUnderlines ?? true, label: 'Underline suggestions', description: 'Turn off to see suggestions only in the side panel.', disabled, onChange: (on) => void actions.setDeviceSetting({ showUnderlines: on }), focusKey: 'general:underlines' }),
+      switchControl({ checked: settings?.showFloatingButton ?? true, label: 'Show the Jammarly button', description: 'The small button in the corner of the box you are typing in. It spins while checking.', disabled, onChange: (on) => void actions.setDeviceSetting({ showFloatingButton: on }), focusKey: 'general:button' }),
+      switchControl({ checked: settings?.colorblindMode ?? false, label: 'Colorblind-friendly colors', description: 'High-contrast colors with a different underline pattern for each kind of suggestion.', disabled, onChange: (on) => void actions.setDeviceSetting({ colorblindMode: on }), focusKey: 'general:colorblind' }),
+    ),
+  );
+
+  // Account: key and spending in one place.
+  const keyInput = textInput({ key: 'apiKey', actions, type: 'password', placeholder: 'Paste a new key', ariaLabel: 'Anthropic API key', onEnter: () => void actions.saveApiKey(keyInput.value) });
+  const budgetInput = h('input', { type: 'number', class: 'jm-input jm-input-sm', min: '0', step: '0.5', value: actions.draft('dailyBudgetUsd', String(settings?.dailyBudgetUsd ?? 2)), disabled, 'aria-label': 'Daily budget in US dollars', dataset: { focusKey: 'general:budget' } });
+  budgetInput.addEventListener('input', () => {
+    actions.setDraft('dailyBudgetUsd', budgetInput.value);
+    actions.clearError('dailyBudgetUsd');
+  });
+  const saveBudget = (): void => void actions.saveBudget(budgetInput.value);
+  budgetInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') saveBudget();
+  });
+  const usage = state.usage;
+  wrap.appendChild(
+    card(
+      'Account',
+      fieldRow({ label: 'Anthropic API key', control: keyInput, error: state.errors.apiKey ?? null, hint: settings?.hasApiKey ? (state.keySavedHint ? `A key is saved (ends with ${state.keySavedHint}). Paste a new one to replace it.` : 'A key is saved. Paste a new one to replace it.') : 'No key saved yet.' }),
+      h(
+        'div',
+        { class: 'jm-actions' },
+        button({ kind: 'primary', size: 'sm', label: 'Save key', onClick: () => void actions.saveApiKey(keyInput.value), disabled: state.busy.apiKey === true, focusKey: 'general:save-key' }),
+        button({ kind: 'secondary', size: 'sm', label: state.keyTest.status === 'testing' ? 'Testing…' : 'Test key', onClick: () => void actions.testApiKey(keyInput.value), disabled: state.keyTest.status === 'testing', focusKey: 'general:test-key' }),
+      ),
+      renderKeyTest(state),
+      fieldRow({
+        label: 'Daily spending limit',
+        hint: 'Jammarly slows down to cheaper checks when today reaches this amount. 0 means no limit.',
+        control: h('div', { class: 'jm-inline-controls' }, h('span', { class: 'jm-prefix' }, '$'), budgetInput, button({ kind: 'secondary', size: 'sm', label: 'Save', onClick: saveBudget, disabled, focusKey: 'general:budget-save' })),
+        error: state.errors.dailyBudgetUsd ?? null,
+      }),
+      h('dl', { class: 'jm-usage' }, h('dt', null, 'Today'), h('dd', { dataset: { usage: 'today' } }, usage ? `${formatUsd(usage.today.costUsd)} · ${usage.today.requests} requests` : '–'), h('dt', null, 'This month'), h('dd', { dataset: { usage: 'month' } }, usage ? `${formatUsd(usage.month.costUsd)} · ${usage.month.requests} requests` : '–')),
+    ),
+  );
+
+  wrap.appendChild(renderShortcuts(state, actions));
+  return wrap;
+}
+
+/** Engine mode, models and check delay: Advanced only. */
+function renderEngine(state: OptionsState, actions: OptionsActions): HTMLElement {
+  const settings = state.settings;
+  const profile = state.profile;
+  const paired = settings?.paired === true;
+  const disabled = !settings;
   const mode = paired ? profile?.settings.mode.value ?? settings?.mode ?? 'hybrid' : settings?.mode ?? 'hybrid';
   const model = paired ? profile?.settings.model.value ?? settings?.model ?? '' : settings?.model ?? '';
   const fastModel = paired ? profile?.settings.fastModel.value ?? settings?.fastModel ?? '' : settings?.fastModel ?? '';
@@ -317,17 +374,6 @@ function renderGeneral(state: OptionsState, actions: OptionsActions): HTMLElemen
       );
     }),
   );
-  wrap.appendChild(
-    card(
-      'Engine',
-      paired ? h('p', { class: 'jm-note' }, icon('info'), h('span', null, 'Mode and models are synced across devices while paired.')) : null,
-      modeGroup,
-      modelField('Deep-pass model', 'model', model, state, actions, disabled),
-      modelField('Fast-pass model', 'fastModel', fastModel, state, actions, disabled),
-    ),
-  );
-
-  // Typing + display
   const debounce = settings?.debounceMs ?? 700;
   const slider = h('input', { type: 'range', class: 'jm-range', min: String(DEBOUNCE_MIN), max: String(DEBOUNCE_MAX), step: '50', value: String(Math.min(DEBOUNCE_MAX, Math.max(DEBOUNCE_MIN, debounce))), disabled, 'aria-label': 'Delay before checking', dataset: { focusKey: 'general:debounce' } });
   const sliderValue = h('span', { class: 'jm-range-value' }, `${debounce} ms`);
@@ -335,59 +381,14 @@ function renderGeneral(state: OptionsState, actions: OptionsActions): HTMLElemen
     sliderValue.textContent = `${slider.value} ms`;
   });
   slider.addEventListener('change', () => void actions.setDeviceSetting({ debounceMs: Number(slider.value) }));
-  wrap.appendChild(
-    card(
-      'Typing and display',
-      fieldRow({ label: 'Delay before checking', hint: 'How long to wait after you stop typing. Shorter is snappier; longer is cheaper.', control: h('div', { class: 'jm-range-row' }, slider, sliderValue) }),
-      switchControl({ checked: settings?.showFloatingButton ?? true, label: 'Show the floating button', description: 'The small button in the corner of each field.', disabled, onChange: (on) => void actions.setDeviceSetting({ showFloatingButton: on }), focusKey: 'general:button' }),
-      switchControl({ checked: settings?.showUnderlines ?? true, label: 'Show underlines', description: 'Turn off to review suggestions only in the side panel.', disabled, onChange: (on) => void actions.setDeviceSetting({ showUnderlines: on }), focusKey: 'general:underlines' }),
-      switchControl({ checked: settings?.colorblindMode ?? false, label: 'Colorblind mode', description: 'A high-contrast palette with a distinct underline pattern per category.', disabled, onChange: (on) => void actions.setDeviceSetting({ colorblindMode: on }), focusKey: 'general:colorblind' }),
-    ),
+  return card(
+    'Engine',
+    paired ? h('p', { class: 'jm-note' }, icon('info'), h('span', null, 'Mode and models are synced across devices while paired.')) : null,
+    modeGroup,
+    modelField('Deep-pass model', 'model', model, state, actions, disabled),
+    modelField('Fast-pass model', 'fastModel', fastModel, state, actions, disabled),
+    fieldRow({ label: 'Delay before checking', hint: 'How long to wait after you stop typing. Shorter is snappier; longer is cheaper.', control: h('div', { class: 'jm-range-row' }, slider, sliderValue) }),
   );
-
-  // Budget
-  const budgetInput = h('input', { type: 'number', class: 'jm-input jm-input-sm', min: '0', step: '0.5', value: actions.draft('dailyBudgetUsd', String(settings?.dailyBudgetUsd ?? 2)), disabled, 'aria-label': 'Daily budget in US dollars', dataset: { focusKey: 'general:budget' } });
-  budgetInput.addEventListener('input', () => {
-    actions.setDraft('dailyBudgetUsd', budgetInput.value);
-    actions.clearError('dailyBudgetUsd');
-  });
-  const saveBudget = (): void => void actions.saveBudget(budgetInput.value);
-  budgetInput.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') saveBudget();
-  });
-  const usage = state.usage;
-  wrap.appendChild(
-    card(
-      'Daily budget',
-      fieldRow({
-        label: 'Spend cap per day',
-        hint: 'When today’s cost reaches this amount only the fast pass runs; when even that would exceed it, checking pauses until midnight. 0 means no limit.',
-        control: h('div', { class: 'jm-inline-controls' }, h('span', { class: 'jm-prefix' }, '$'), budgetInput, button({ kind: 'secondary', size: 'sm', label: 'Save', onClick: saveBudget, disabled, focusKey: 'general:budget-save' })),
-        error: state.errors.dailyBudgetUsd ?? null,
-      }),
-      h('dl', { class: 'jm-usage' }, h('dt', null, 'Today'), h('dd', { dataset: { usage: 'today' } }, usage ? `${formatUsd(usage.today.costUsd)} · ${usage.today.requests} requests` : '–'), h('dt', null, 'This month'), h('dd', { dataset: { usage: 'month' } }, usage ? `${formatUsd(usage.month.costUsd)} · ${usage.month.requests} requests` : '–')),
-    ),
-  );
-
-  // API key
-  const keyInput = textInput({ key: 'apiKey', actions, type: 'password', placeholder: 'Paste a new key', ariaLabel: 'Anthropic API key', onEnter: () => void actions.saveApiKey(keyInput.value) });
-  wrap.appendChild(
-    card(
-      'API key',
-      helpText('Stored only on this device. The current key is never displayed; paste a new one to replace it.'),
-      fieldRow({ label: 'Replace key', control: keyInput, error: state.errors.apiKey ?? null, hint: settings?.hasApiKey ? (state.keySavedHint ? `A key is saved (ends with ${state.keySavedHint}).` : 'A key is saved.') : 'No key saved.' }),
-      h(
-        'div',
-        { class: 'jm-actions' },
-        button({ kind: 'primary', label: 'Save key', onClick: () => void actions.saveApiKey(keyInput.value), disabled: state.busy.apiKey === true, focusKey: 'general:save-key' }),
-        button({ kind: 'secondary', label: state.keyTest.status === 'testing' ? 'Testing…' : 'Test key', onClick: () => void actions.testApiKey(keyInput.value), disabled: state.keyTest.status === 'testing', focusKey: 'general:test-key' }),
-      ),
-      renderKeyTest(state),
-    ),
-  );
-
-  wrap.appendChild(renderShortcuts(state, actions));
-  return wrap;
 }
 
 function renderShortcuts(state: OptionsState, actions: OptionsActions): HTMLElement {
@@ -444,13 +445,85 @@ function modelField(label: string, key: 'model' | 'fastModel', current: string, 
 // Suggestions
 // ---------------------------------------------------------------------------
 
-function renderSuggestions(state: OptionsState, actions: OptionsActions): HTMLElement {
+function renderStyle(state: OptionsState, actions: OptionsActions): HTMLElement {
   const profile = state.profile;
+  const settings = state.settings;
   const wrap = h('div', { class: 'jm-stack' });
+  const disabled = !profile || !settings;
+  const savedOwner = settings?.styleOwner ?? '';
+  const savedStyle = profile?.settings.customInstructions.value ?? '';
+  const owner = textInput({ key: 'styleOwner', actions, placeholder: 'Your name', ariaLabel: 'Whose writing style', fallback: savedOwner, maxLength: 80 });
+  const draft = actions.draft('customInstructions', savedStyle);
+  const area = h('textarea', {
+    class: 'jm-textarea jm-style-text',
+    rows: '12',
+    maxlength: String(CUSTOM_INSTRUCTIONS_MAX + 500),
+    placeholder: 'How you write, in plain words. For example:\nShort, direct sentences. Friendly but not gushing.\nNever use em dashes; use commas or periods instead.\nSign off with just my first name.',
+    'aria-label': 'Writing style',
+    disabled,
+    dataset: { focusKey: 'customInstructions' },
+  });
+  area.value = draft;
+  const counter = h('span', { class: ['jm-counter', draft.length > CUSTOM_INSTRUCTIONS_MAX ? 'is-over' : null] }, `${draft.length} / ${CUSTOM_INSTRUCTIONS_MAX}`);
+  area.addEventListener('input', () => {
+    actions.setDraft('customInstructions', area.value);
+    counter.textContent = `${area.value.length} / ${CUSTOM_INSTRUCTIONS_MAX}`;
+    counter.classList.toggle('is-over', area.value.length > CUSTOM_INSTRUCTIONS_MAX);
+    actions.clearError('customInstructions');
+  });
+  const fileInput = h('input', { type: 'file', accept: '.json,.txt,application/json,text/plain', class: 'jm-file', 'aria-label': 'Import a writing style', dataset: { focusKey: 'style:import' } });
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const read = typeof file.text === 'function' ? file.text() : new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+      reader.readAsText(file);
+    });
+    void read.then((text) => actions.importWritingStyle(text));
+    fileInput.value = '';
+  });
+  const whose = savedOwner ? `${savedOwner}’s` : 'Your';
+  wrap.appendChild(
+    card(
+      `${whose} style`,
+      helpText('Jammarly shapes every suggestion to sound like the person described here, and leaves alone the habits that are part of that style. It also keeps learning from what you accept and dismiss.'),
+      fieldRow({ label: 'Whose style is this?', control: owner }),
+      fieldRow({ label: 'How they write', control: area, error: state.errors.customInstructions ?? null }),
+      h('div', { class: 'jm-actions jm-actions-split' }, counter, button({ kind: 'primary', size: 'sm', label: 'Save style', onClick: () => void actions.saveWritingStyle(owner.value, area.value), disabled, focusKey: 'style:save' })),
+    ),
+  );
+  wrap.appendChild(
+    card(
+      'Share or switch',
+      helpText('Each person keeps their own style. Export saves this one to a file. Someone else using Jammarly can import theirs, or reset to start from a blank style.'),
+      h(
+        'div',
+        { class: 'jm-actions' },
+        button({ kind: 'secondary', size: 'sm', icon: 'download', label: 'Export', onClick: () => void actions.exportWritingStyle(), disabled: savedStyle.length === 0, focusKey: 'style:export' }),
+        h('label', { class: 'jm-btn jm-btn-secondary jm-btn-sm jm-file-label' }, icon('upload'), h('span', { class: 'jm-btn-label' }, 'Import'), fileInput),
+        state.confirm === 'reset-style' ? null : button({ kind: 'danger', size: 'sm', label: 'Reset', onClick: () => actions.requestResetStyle(), disabled: disabled || (savedStyle.length === 0 && savedOwner.length === 0), focusKey: 'style:reset' }),
+      ),
+      state.confirm === 'reset-style'
+        ? inlineConfirm({ message: `Clear ${savedOwner ? `${savedOwner}’s` : 'this'} writing style? Export it first if you want to keep it.`, confirmLabel: 'Reset', danger: true, onConfirm: () => void actions.confirmResetStyle(), onCancel: () => actions.cancelConfirm() })
+        : null,
+    ),
+  );
+  wrap.appendChild(
+    card(
+      'Language',
+      fieldRow({ label: 'English', control: select<Dialect>({ options: DIALECTS, value: profile?.settings.dialect.value ?? 'en-US', ariaLabel: 'English dialect', disabled: !profile, focusKey: 'dialect', onChange: (v) => void actions.setDialect(v) }) }),
+    ),
+  );
+  return wrap;
+}
+
+/** Goals and muted rules: Advanced only. */
+function renderGoals(state: OptionsState, actions: OptionsActions): HTMLElement[] {
+  const profile = state.profile;
   const disabled = !profile;
   const goals: WritingGoals = profile?.settings.goals.value ?? { audience: 'general', formality: 'neutral', domain: 'general', intent: 'inform' };
-
-  wrap.appendChild(
+  const out: HTMLElement[] = [
     card(
       'Goals',
       helpText('Default goals for every site. The side panel can override them for a single site.'),
@@ -465,73 +538,29 @@ function renderSuggestions(state: OptionsState, actions: OptionsActions): HTMLEl
         ),
       ),
     ),
-  );
-
-  wrap.appendChild(
-    card(
-      'Language',
-      fieldRow({ label: 'English dialect', control: select<Dialect>({ options: DIALECTS, value: profile?.settings.dialect.value ?? 'en-US', ariaLabel: 'English dialect', disabled, focusKey: 'dialect', onChange: (v) => void actions.setDialect(v) }) }),
-    ),
-  );
-
-  const categories = profile?.settings.categories.value ?? { correctness: true, clarity: true, engagement: true, delivery: true };
-  wrap.appendChild(
-    card(
-      'Categories',
-      helpText('Turn off a whole category to stop seeing its underlines and cards.'),
-      CATEGORIES.map((category: SuggestionCategory) =>
+  ];
+  const muted = liveValues(profile?.rules.muted);
+  if (muted.length > 0) {
+    out.push(
+      card(
+        'Muted rules',
+        helpText('Rules you turned off from a card (“Turn off this rule everywhere”). Unmute to see them again.'),
         h(
-          'div',
-          { class: 'jm-category-row' },
-          categoryDot(category),
-          switchControl({ checked: categories[category] !== false, label: CATEGORY_LABELS[category], description: CATEGORY_DESCRIPTIONS[category], disabled, onChange: (on) => void actions.setCategories({ ...categories, [category]: on }), focusKey: `category:${category}` }),
+          'ul',
+          { class: 'jm-list', dataset: { list: 'muted' } },
+          muted.map((rule) => h('li', { class: 'jm-list-item', dataset: { value: rule } }, h('span', { class: 'jm-list-value' }, ruleTitle(rule), h('span', { class: 'jm-list-sub' }, rule)), button({ kind: 'secondary', size: 'sm', label: 'Unmute', onClick: () => void actions.unmuteRule(rule), focusKey: `muted:${rule}` }))),
         ),
       ),
-    ),
-  );
-
-  const savedInstructions = profile?.settings.customInstructions.value ?? '';
-  const draft = actions.draft('customInstructions', savedInstructions);
-  const area = h('textarea', { class: 'jm-textarea', rows: '5', maxlength: String(CUSTOM_INSTRUCTIONS_MAX + 500), placeholder: 'e.g. Prefer short sentences. Keep British spelling in product names. Never flag "lol".', 'aria-label': 'Custom instructions', disabled, dataset: { focusKey: 'customInstructions' } });
-  area.value = draft;
-  const counter = h('span', { class: ['jm-counter', draft.length > CUSTOM_INSTRUCTIONS_MAX ? 'is-over' : null] }, `${draft.length} / ${CUSTOM_INSTRUCTIONS_MAX}`);
-  area.addEventListener('input', () => {
-    actions.setDraft('customInstructions', area.value);
-    counter.textContent = `${area.value.length} / ${CUSTOM_INSTRUCTIONS_MAX}`;
-    counter.classList.toggle('is-over', area.value.length > CUSTOM_INSTRUCTIONS_MAX);
-    actions.clearError('customInstructions');
-  });
-  wrap.appendChild(
-    card(
-      'Custom instructions',
-      helpText('Applied as preferences, not commands: they steer wording and what gets flagged, and never relax correctness checks.'),
-      fieldRow({ label: 'Instructions', control: area, error: state.errors.customInstructions ?? null }),
-      h('div', { class: 'jm-actions jm-actions-split' }, counter, button({ kind: 'primary', size: 'sm', label: 'Save instructions', onClick: () => void actions.saveCustomInstructions(area.value), disabled, focusKey: 'customInstructions:save' })),
-    ),
-  );
-
-  const muted = liveValues(profile?.rules.muted);
-  wrap.appendChild(
-    card(
-      'Muted rules',
-      helpText('Rules you turned off from a card (“Turn off this rule everywhere”). Unmute to see them again.'),
-      muted.length === 0
-        ? h('p', { class: 'jm-list-empty' }, 'No muted rules.')
-        : h(
-            'ul',
-            { class: 'jm-list', dataset: { list: 'muted' } },
-            muted.map((rule) => h('li', { class: 'jm-list-item', dataset: { value: rule } }, h('span', { class: 'jm-list-value' }, ruleTitle(rule), h('span', { class: 'jm-list-sub' }, rule)), button({ kind: 'secondary', size: 'sm', label: 'Unmute', onClick: () => void actions.unmuteRule(rule), focusKey: `muted:${rule}` }))),
-          ),
-    ),
-  );
-  return wrap;
+    );
+  }
+  return out;
 }
 
 const CATEGORY_DESCRIPTIONS: Record<SuggestionCategory, string> = {
   correctness: 'Spelling, grammar and punctuation.',
-  clarity: 'Wordiness, passive voice, hard-to-read sentences.',
-  engagement: 'Word choice and variety.',
-  delivery: 'Tone, politeness and formality.',
+  clarity: 'Wordy phrases and sentences that are hard to follow.',
+  engagement: 'Livelier word choices.',
+  delivery: 'Tone: how polite, confident or formal you sound.',
 };
 
 /** Title for a rule id; falls back to the id when the vocabulary has no entry. */
@@ -558,6 +587,14 @@ function renderSites(state: OptionsState, actions: OptionsActions): HTMLElement 
       listWithRemove(disabledHosts, (host) => void actions.removeDisabledSite(host), 'Jammarly is on everywhere.', 'disabled'),
     ),
   );
+  return wrap;
+}
+
+/** Sites whose writing-assistant opt-out Jammarly ignores: Advanced only. */
+function renderSiteExceptions(state: OptionsState, actions: OptionsActions): HTMLElement {
+  const profile = state.profile;
+  const ignoreOptOut = profile?.settings.ignoreOptOutHosts.value ?? [];
+  const wrap = h('div', { class: 'jm-stack' });
   const addIgnore = textInput({ key: 'ignoreOptOutHost', actions, placeholder: 'app.slack.com', ariaLabel: 'Site to check anyway', onEnter: () => void actions.addIgnoreOptOutHost(addIgnore.value) });
   wrap.appendChild(
     card(
@@ -568,7 +605,7 @@ function renderSites(state: OptionsState, actions: OptionsActions): HTMLElement 
       switchControl({ checked: profile?.settings.checkOptedOutFields.value ?? false, label: 'Check opted-out fields everywhere', description: 'Ignore every site’s opt-out attribute. Use the list above for a few sites instead.', disabled: !profile, onChange: (on) => void actions.setCheckOptedOutFields(on), focusKey: 'sites:check-opted-out' }),
     ),
   );
-  return wrap;
+  return wrap.firstElementChild as HTMLElement;
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +785,12 @@ function renderPrivacy(state: OptionsState, actions: OptionsActions): HTMLElemen
 function renderAdvanced(state: OptionsState, actions: OptionsActions): HTMLElement {
   const settings = state.settings;
   const wrap = h('div', { class: 'jm-stack' });
+  wrap.appendChild(h('p', { class: 'jm-lead' }, 'Most people never need these. The defaults are tuned for speed and cost.'));
+  wrap.appendChild(renderEngine(state, actions));
+  for (const el of renderGoals(state, actions)) wrap.appendChild(el);
+  wrap.appendChild(renderSiteExceptions(state, actions));
+  for (const el of Array.from(renderPrivacy(state, actions).children)) wrap.appendChild(el);
+  for (const el of Array.from(renderSync(state, actions).children)) wrap.appendChild(el);
   wrap.appendChild(
     card(
       'Google Docs',

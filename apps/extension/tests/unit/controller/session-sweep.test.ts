@@ -24,6 +24,9 @@ function lastCheck(h: ReturnType<typeof makeSession>) {
 function firstCheck(h: ReturnType<typeof makeSession>) {
   h.session.recheck();
   vi.advanceTimersByTime(3000);
+  // Answer every check but the last with nothing, so none is left in flight for Accept everything to wait on.
+  const checks = h.messages('check');
+  for (const c of checks.slice(0, -1)) h.emit({ type: 'check-result', result: makeResult('f1', c.request.version, c.request.text, [], { pass: c.request.pass }) });
   return lastCheck(h);
 }
 
@@ -74,7 +77,8 @@ describe('field session: Accept everything sweeps', () => {
     const h = makeSession({ text: TEXT });
     let req = firstCheck(h);
     let text = TEXT;
-    const swaps: [string, string][] = [['planning', 'scheduling'], ['scheduling', 'arranging'], ['arranging', 'setting up'], ['setting up', 'booking']];
+    const words = ['planning', 'scheduling', 'arranging', 'setting up', 'booking', 'holding', 'running', 'leading'];
+    const swaps = words.slice(0, -1).map((w, i): [string, string] => [w, words[i + 1]!]);
     h.emit({ type: 'check-result', result: makeResult('f1', req.version, text, [sugAt(text, swaps[0]![0], { id: 'r0', replacement: swaps[0]![1], ...style })], { pass: req.pass }) });
     await h.session.acceptAll({ group: 'all' });
     await flushPromises();
@@ -84,8 +88,8 @@ describe('field session: Accept everything sweeps', () => {
       h.emit({ type: 'check-result', result: makeResult('f1', req.version, text, [sugAt(text, swaps[i]![0], { id: `r${i}`, replacement: swaps[i]![1], ...style })], { pass: req.pass }) });
       await flushPromises(6);
     }
-    expect(h.adapter.getText()).toBe('We are setting up a review of the new design next week.');
-    expect(h.ui.toasts.at(-1)?.message).toBe('Fixed 3 issues in 3 rounds');
+    expect(h.adapter.getText()).toBe('We are running a review of the new design next week.');
+    expect(h.ui.toasts.at(-1)?.message).toBe('Fixed 6 issues in 6 rounds');
     h.session.dispose();
   });
 
@@ -98,6 +102,37 @@ describe('field session: Accept everything sweeps', () => {
     await flushPromises();
     expect(h.messages('check').length).toBe(checksBefore);
     expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
+    h.session.dispose();
+  });
+
+  it('never undoes its own fix in a later round', async () => {
+    const h = makeSession({ text: TEXT });
+    let req = firstCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [sugAt(TEXT, 'planning', { id: 'a', replacement: 'scheduling', ...style })], { pass: req.pass }) });
+    await h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    const text = h.adapter.getText();
+    req = lastCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, text, [sugAt(text, 'scheduling', { id: 'b', replacement: 'planning', ...style })], { pass: req.pass }) });
+    await flushPromises(6);
+    expect(h.adapter.getText()).toBe('We are scheduling a review of the new design next week.');
+    expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
+    h.session.dispose();
+  });
+
+  it('waits for a check already under way, so one press gets its findings too', async () => {
+    const h = makeSession({ text: TEXT });
+    h.session.recheck();
+    vi.advanceTimersByTime(3000);
+    const checks = h.messages('check');
+    const pressed = h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    expect(h.adapter.getText()).toBe(TEXT);
+    for (const c of checks.slice(0, -1)) h.emit({ type: 'check-result', result: makeResult('f1', c.request.version, c.request.text, [], { pass: c.request.pass }) });
+    const deep = checks.at(-1)!.request;
+    h.emit({ type: 'check-result', result: makeResult('f1', deep.version, TEXT, [sugAt(TEXT, 'are planning', { id: 's1', replacement: 'plan', ...style })], { pass: deep.pass }) });
+    await pressed;
+    expect(h.adapter.getText()).toBe('We plan a review of the new design next week.');
     h.session.dispose();
   });
 

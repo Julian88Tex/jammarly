@@ -393,6 +393,8 @@ export interface DeviceSettings {
    * (behaves as 'economy'); when even the fast model would exceed it, checks answer error.code 'budget'.
    */
   dailyBudgetUsd: number;
+  /** Whose writing style the style profile (profile.settings.customInstructions) describes, e.g. "Julian". */
+  styleOwner: string;
   /** Pairing with the web app; null when unpaired. */
   pairing: DevicePairing | null;
 }
@@ -432,6 +434,7 @@ export const DEFAULT_DEVICE_SETTINGS: DeviceSettings = {
   colorblindMode: false,
   gdocsInline: 'auto',
   dailyBudgetUsd: 2,
+  styleOwner: '',
   pairing: null,
 };
 
