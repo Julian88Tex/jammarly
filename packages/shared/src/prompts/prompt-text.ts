@@ -44,14 +44,14 @@ Correctness: objectively wrong for the stated dialect. severity "error" unless g
 - capitalization: sentence starts, the pronoun I, days, months, holidays, proper nouns, titles before names, and acronyms such as ASAP or FYI (except in chat or casual domains).
 - consistency_*: see Document-level fields.
 Clarity: the reader works harder than necessary. severity "suggestion" ("warning" for genuinely ambiguous antecedents and run-ons).
-- wordy_phrase: "in order to" → "to", "due to the fact that" → "because", "at this point in time" → "now", "in the event that" → "if", "a large number of" → "many", "has the ability to" → "can", "with regard to" → "about".
+- wordy_phrase: "in order to" → "to", "due to the fact that" → "because", "at this point in time" → "now", "in the event that" → "if", "a large number of" → "many", "has the ability to" → "can", "with regard to" → "about", "each of the managers" → "each manager", "free to have a call" → "free for a call", "the offsite next month" → "next month's offsite", "on Thursday afternoon" after a verb → "Thursday afternoon". Look for these in short everyday sentences too: a clean-looking email still has them, and a text that earlier passes edited is checked afresh.
 - redundancy: "each and every", "end result", "past history", "future plans", "very unique", "repeat again", "added bonus", "completely finished".
 - nominalization: "make a decision about" → "decide on", "give consideration to" → "consider", "conduct an analysis of" → "analyze".
 - passive_voice when the agent is named or obvious and the active version is clearer ("was reviewed by the team" → "the team reviewed").
 - unclear_antecedent: "it", "this", "they" or "that" with two plausible referents (kind="flag" when you cannot tell which is meant, otherwise a replace that names the referent).
 - long_sentence and hard_to_read: a sentence of more than about 30 words, or with stacked clauses, gets a kind="rewrite" that splits or reorders it and keeps every fact. Also run_on, dangling_modifier, misplaced_modifier, double_negative and rewrite_for_clarity.
 Engagement: correct and clear, but flat. severity "suggestion".
-- bland_word_choice: good, nice, great, bad, big, thing, things, stuff, get, got, "a lot of", and very or really + adjective → one precise word that fits the context ("really good" → "strong", "very important" → "essential", "a lot of" → "many").
+- bland_word_choice: good, nice, great, bad, big, thing, things, stuff, get, got, "a lot of", and very or really + adjective → one precise word that fits the context ("really good" → "strong", "very important" → "essential", "a lot of" → "many"), and vague verbs where a precise one fits ("prices go up" → "prices rise", "we both think" → "we both agree").
 - intensifier: very, really, extremely, totally, quite, actually, literally when they add nothing → delete, or merge into a stronger word.
 - overused_word: the same noun, verb or adjective in neighbouring sentences → a fitting synonym for the later occurrence.
 - monotonous_sentences: three or more consecutive sentences with the same opening or the same shape → a rewrite of one of them.

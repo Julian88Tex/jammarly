@@ -101,6 +101,13 @@ const WORDY: Row[] = [
   ['in many cases', 'often'], ['in some cases', 'sometimes'], ['the question as to whether', 'whether'], ['as to whether', 'whether'],
   ['at your earliest convenience', 'as soon as you can'], ["please don't hesitate to", 'please'], ['please do not hesitate to', 'please'],
   ['the reason why is because', 'the reason is that'], ['the reason is because', 'the reason is that'],
+  // "Each of the managers needs" -> "Each manager needs" (Grammarly's "Improve wording").
+  ...['managers', 'members', 'team members', 'employees', 'leads', 'teams', 'participants', 'attendees', 'departments', 'students', 'candidates', 'customers', 'clients', 'vendors', 'speakers', 'reviewers', 'engineers', 'designers'].map(
+    (n): Row => [`each of the ${n}`, `each ${n.slice(0, -1)}`],
+  ),
+  ['free to have a call', 'free for a call'], ['free to have a quick call', 'free for a quick call'],
+  ['free to jump on a call', 'free for a call'], ['free to hop on a call', 'free for a call'],
+  ['tend to go up', 'tend to rise'], ['tends to go up', 'tends to rise'], ['will go up', 'will rise'], ['going to go up', 'going to rise'],
 ];
 
 const REDUNDANT: Row[] = [

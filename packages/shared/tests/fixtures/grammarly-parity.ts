@@ -293,6 +293,9 @@ export const PARITY_CASES: ParityCase[] = [
   { text: 'It might could take longer than that.', rule: 'extra_word', original: 'might could', replacement: 'might' },
   { text: 'Priya and I were looking at a few venues yesterday.', rule: 'tense', original: 'were looking', replacement: 'looked' },
   { text: 'We were discussing the budget two days ago.', rule: 'tense', original: 'were discussing', replacement: 'discussed' },
+  { text: 'Each of the managers needs to send their headcount.', rule: 'wordy_phrase', original: 'Each of the managers', replacement: 'Each manager' },
+  { text: "Let me know if you're free to have a call on Thursday.", rule: 'wordy_phrase', original: 'free to have a call', replacement: 'free for a call' },
+  { text: 'Prices tend to go up closer to the date.', rule: 'wordy_phrase', original: 'tend to go up', replacement: 'tend to rise' },
   { text: 'Can you explain me how the new process works?', rule: 'missing_word', original: 'explain me', replacement: 'explain to me' },
 
   // ---------------------------------------------------------------- cliches
