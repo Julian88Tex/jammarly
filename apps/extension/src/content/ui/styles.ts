@@ -275,14 +275,15 @@ button {
 
 /* sentence card: the whole sentence inline, one button that accepts every change */
 .jm-card[data-mode="sentence"] { max-width: 420px; }
-.jm-sentence-head { position: absolute; top: 16px; right: 20px; min-height: 0; z-index: 1; }
+.jm-sentence-head { position: absolute; top: 8px; right: 10px; min-height: 0; z-index: 1; }
+/* bleeds past the card padding so the shaded block, and the click target, reach the card's edges */
 .jm-sentence {
   display: block;
-  width: 100%;
-  margin: 0 0 8px;
-  padding: 10px 36px 12px 12px;
+  width: calc(100% + 28px);
+  margin: -12px -14px 8px;
+  padding: 14px 40px 14px 14px;
   border: 0;
-  border-radius: var(--jm-radius-btn);
+  border-radius: calc(var(--jm-radius-card) - 1px) calc(var(--jm-radius-card) - 1px) 0 0;
   background: color-mix(in srgb, var(--jm-accent) 9%, var(--jm-surface));
   color: var(--jm-text);
   font: inherit;
