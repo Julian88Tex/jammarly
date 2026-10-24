@@ -500,19 +500,22 @@ export class SuggestionCard {
     const dotCategory = categories.size === 1 ? (members[0]?.category ?? hovered.category) : hovered.category;
     const allTierA = members.every((m) => m.tier === 'A');
 
-    // Like the sentence below it, the title accepts every change when clicked (Grammarly's whole top block does).
-    const title = h('h2', { class: 'jm-title jm-sentence-title', id: this.titleId, 'data-jm': 'card-title', title: 'Accept all changes', onclick: acceptAll }, sentenceTitle(members));
-    keepHostSelection(title);
+    // Grammarly-style: the label and the sentence share one shaded block, and the whole block is the accept button.
+    // The head keeps only the close button, floated into the block's top-right corner.
     const head = h(
       'div',
-      { class: 'jm-card-head', 'data-jm': 'card-head' },
-      categoryDot(dotCategory),
-      title,
-      allTierA ? h('span', { class: 'jm-chip', 'data-jm': 'card-badge', 'data-tier': 'A' }, 'Auto') : null,
+      { class: 'jm-card-head jm-sentence-head', 'data-jm': 'card-head' },
       hostSafeButton(
         { class: 'jm-iconbtn jm-sm jm-card-close', 'data-jm': 'card-close', 'aria-label': 'Close', title: 'Close (Esc)', onclick: () => this.cb.onRequestClose() },
         svgIcon('close', 14),
       ),
+    );
+    const label = h(
+      'span',
+      { class: 'jm-sentence-label' },
+      categoryDot(dotCategory),
+      h('span', { class: 'jm-title jm-sentence-title', id: this.titleId, 'data-jm': 'card-title' }, sentenceTitle(members)),
+      allTierA ? h('span', { class: 'jm-chip', 'data-jm': 'card-badge', 'data-tier': 'A' }, 'Auto') : null,
     );
 
     // The whole sentence inline: plain text, struck originals, bold replacements. One button: clicking accepts all.
@@ -545,7 +548,8 @@ export class SuggestionCard {
         'aria-label': `Accept ${members.length} changes: ${result.trim()}`,
         onclick: acceptAll,
       },
-      children,
+      label,
+      h('span', { class: 'jm-sentence-text', 'data-jm': 'sentence-text' }, ...children),
     );
 
     const morePanel = h('div', { class: 'jm-more-panel', 'data-jm': 'more-panel', role: 'group', 'aria-label': 'More actions', hidden: true });

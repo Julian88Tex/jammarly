@@ -37,7 +37,7 @@ import type { FieldOverlay, Overlay, OverlayOptions, UnderlineItem } from '../ui
 import { ApplyEngine } from './apply';
 import { FeedbackTracker } from './feedback';
 import { passFor, Scheduler, type PassTrigger, type RequestedPass, type SchedulerConfig } from './scheduler';
-import { SuggestionStore, type StoreFilters } from './store';
+import { selectAcceptAll, SuggestionStore, type StoreFilters } from './store';
 import { TextModel } from './text-model';
 import { computeDocKey, fieldPath, randomToken, realTimers, type Timers } from './util';
 
@@ -111,6 +111,13 @@ export function computeStatus(input: StatusInput): FieldStatus {
   return 'idle';
 }
 
+/** Rounds "Accept everything" runs at most; each round re-checks with Claude, so this also caps the cost. */
+const MAX_SWEEP_ROUNDS = 3;
+
+function sweepDoneText(total: number, rounds: number): string {
+  return rounds > 1 ? `Fixed ${total} issue${total === 1 ? '' : 's'} in ${rounds} rounds` : `Applied ${total} change${total === 1 ? '' : 's'}`;
+}
+
 function passRank(pass: CheckPass | undefined): number {
   return pass === undefined ? -1 : PASS_RANK[pass];
 }
@@ -137,6 +144,8 @@ export class FieldSession {
   private readonly rateLimitRetries: Partial<Record<RequestedPass, number>> = {};
   private readonly checked = new Map<string, CheckPass>();
   private everChecked = false;
+  /** "Accept everything" keeps going: apply, re-check the changed text, apply that round's fixes, until clean. */
+  private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; pass?: RequestedPass } | null = null;
   private deepScheduled = false;
   private lastError: CheckError | undefined;
   private toneValue: ToneAnalysis | undefined;
@@ -454,8 +463,9 @@ export class FieldSession {
     this.refresh();
   }
 
-  async acceptAll(scope: AcceptAllScope, via: FeedbackVia = 'bulk'): Promise<number> {
+  async acceptAll(scope: AcceptAllScope, via: FeedbackVia = 'bulk', continuing = false): Promise<number> {
     if (this.disposed) return 0;
+    if (!continuing) this.sweep = null;
     const result = await this.apply.acceptAll(scope);
     if (this.disposed) return 0;
     if (result.transaction && result.report) {
@@ -469,18 +479,62 @@ export class FieldSession {
       this.deps.send({ type: 'apply-report', report: result.report });
       const n = result.applied.length;
       this.ui.closeCard();
-      this.ui.toast(`Applied ${n} change${n === 1 ? '' : 's'}`, { undoTransactionId: tx.id });
-      if (scope.group !== 'grammar' && result.pendingRewrites.length > 0) {
+      // A whole-field bulk accept (not a sentence card's explicit subset) sweeps: the fixes often reveal new ones.
+      const sweeping = scope.suggestionIds === undefined;
+      const round = continuing && this.sweep ? this.sweep.round + 1 : 1;
+      const total = (continuing && this.sweep ? this.sweep.total : 0) + n;
+      if (sweeping && round < MAX_SWEEP_ROUNDS) {
+        this.sweep = { scope, round, total, lastTx: tx.id };
+        this.ui.toast(`Fixing… round ${round} (${total} change${total === 1 ? '' : 's'} so far)`, { undoTransactionId: tx.id });
+      } else {
+        this.sweep = null;
+        this.ui.toast(sweepDoneText(total, round), { undoTransactionId: tx.id });
+      }
+      if (scope.group !== 'grammar' && result.pendingRewrites.length > 0 && this.sweep === null) {
         const k = result.pendingRewrites.length;
         this.ui.toast(`${k} rewrite${k === 1 ? '' : 's'} need${k === 1 ? 's' : ''} your choice`);
       }
       this.scheduler.afterApply();
       this.refresh();
+      if (this.sweep) {
+        // Rules see the new text now; the Claude pass for the changed paragraphs is requested right away and the
+        // sweep continues when it lands (handleResult). Without Claude, the rules alone decide the next round.
+        this.runLocalRules();
+        if (this.canCheck()) {
+          const pass = passFor('deep', this.deps.getConfig().mode);
+          this.sweep.pass = pass;
+          this.requestPass(pass, 'after-apply');
+        } else void this.continueSweep();
+      }
       return n;
+    }
+    if (continuing && this.sweep) {
+      this.finishSweep();
+      return 0;
     }
     if (result.skipped.length > 0) this.ui.toast("Couldn't apply these changes here");
     this.refresh();
     return 0;
+  }
+
+  /** Next sweep round once the re-check is in: apply what it found, or report the total when nothing is left. */
+  private async continueSweep(): Promise<void> {
+    const sweep = this.sweep;
+    if (!sweep || this.disposed) return;
+    this.runLocalRules();
+    if (selectAcceptAll(this.store.all, sweep.scope).selected.length === 0) {
+      this.finishSweep();
+      return;
+    }
+    await this.acceptAll(sweep.scope, 'bulk', true);
+  }
+
+  private finishSweep(): void {
+    const sweep = this.sweep;
+    this.sweep = null;
+    if (!sweep) return;
+    this.ui.toast(sweepDoneText(sweep.total, sweep.round), { undoTransactionId: sweep.lastTx });
+    this.refresh();
   }
 
   async undo(transactionId?: string): Promise<number> {
@@ -645,6 +699,7 @@ export class FieldSession {
     if (!change) return;
     const rebase = this.store.rebase(oldText, text, own ? { ids: this.own!.ids } : undefined);
     if (!own) {
+      this.sweep = null; // the user took over: stop applying rounds
       for (const s of rebase.dropped) {
         this.feedback.invalidated(s, oldText);
         this.feedback.trackDropped(s, oldText);
@@ -763,6 +818,8 @@ export class FieldSession {
     }
     this.deepScheduled = false;
     if (result.usage) this.usage = result.usage;
+    // A failed or cancelled sweep re-check ends the sweep with what it has applied so far.
+    if (result.error && isCurrent && this.sweep && pass === this.sweep.pass) this.finishSweep();
     if (result.error) {
       if (result.error.code === 'cancelled') {
         if (isCurrent && pass && entry && result.error.retryable && hashText(this.model.text) === entry.textHash) {
@@ -811,6 +868,7 @@ export class FieldSession {
     if (result.tone) this.toneValue = result.tone;
     this.pruneLog();
     this.refresh();
+    if (isCurrent && this.sweep && pass === this.sweep.pass) void this.continueSweep();
   }
 
   private cancelInflight(): void {

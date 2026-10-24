@@ -275,16 +275,15 @@ button {
 
 /* sentence card: the whole sentence inline, one button that accepts every change */
 .jm-card[data-mode="sentence"] { max-width: 420px; }
-.jm-sentence-title { flex: 1 1 auto; margin: 0; cursor: pointer; }
-.jm-card[data-mode="sentence"]:has(.jm-sentence-title:hover) .jm-sentence { background: color-mix(in srgb, var(--jm-accent) 8%, transparent); }
+.jm-sentence-head { position: absolute; top: 16px; right: 20px; min-height: 0; z-index: 1; }
 .jm-sentence {
   display: block;
   width: 100%;
-  margin: 8px 0 8px;
-  padding: 4px 6px;
+  margin: 0 0 8px;
+  padding: 10px 36px 12px 12px;
   border: 0;
   border-radius: var(--jm-radius-btn);
-  background: transparent;
+  background: color-mix(in srgb, var(--jm-accent) 9%, var(--jm-surface));
   color: var(--jm-text);
   font: inherit;
   font-size: var(--jm-fs-lg);
@@ -294,9 +293,12 @@ button {
   overflow-wrap: anywhere;
   cursor: pointer;
 }
-.jm-sentence:hover, .jm-sentence:focus-visible { background: color-mix(in srgb, var(--jm-accent) 8%, transparent); outline: none; }
+.jm-sentence:hover, .jm-sentence:focus-visible { background: color-mix(in srgb, var(--jm-accent) 16%, var(--jm-surface)); outline: none; }
 .jm-sentence:focus-visible { box-shadow: 0 0 0 2px var(--jm-accent); }
-.jm-sentence .jm-original { margin-right: 2px; }
+.jm-sentence-label { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: var(--jm-fs-sm); color: var(--jm-text-muted); }
+.jm-sentence-title { margin: 0; font-size: var(--jm-fs-sm); font-weight: 500; color: var(--jm-text-muted); }
+.jm-sentence-text { display: block; }
+.jm-sentence .jm-original { margin-right: 4px; font-weight: 700; text-decoration-thickness: 2px; }
 .jm-sentence-new { color: var(--jm-accent); font-weight: 700; }
 
 .jm-options {

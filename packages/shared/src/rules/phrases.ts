@@ -163,6 +163,7 @@ const EXTRA_WORDS: Row[] = [
   ['discuss about', 'discuss'], ['discussed about', 'discussed'], ['discussing about', 'discussing'], ['discusses about', 'discusses'],
   ['mention about', 'mention'], ['mentioned about', 'mentioned'], ['emphasize on', 'emphasize'], ['emphasized on', 'emphasized'],
   ['cope up with', 'cope with'], ['return back to', 'return to'], ['reply back to', 'reply to'],
+  ['might could', 'might', 'Use one helping verb: "might" already says it is possible.'],
 ];
 const MISSING_WORDS: Row[] = [
   ['explain me', 'explain to me'], ['explained me', 'explained to me'], ['explaining me', 'explaining to me'],

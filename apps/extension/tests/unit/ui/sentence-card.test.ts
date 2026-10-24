@@ -131,7 +131,8 @@ describe('sentence card', () => {
     expect(text(h.q('[data-jm="card-badge"]'))).toBe('Auto');
     const content = h.q<HTMLButtonElement>('[data-jm="sentence-content"]');
     expect(content.tagName).toBe('BUTTON');
-    expect(text(content)).toBe('Their going to tehthe store tomorowtomorrow.');
+    expect(text(h.q('[data-jm="sentence-text"]'))).toBe('Their going to tehthe store tomorowtomorrow.');
+    expect(content.contains(h.q('[data-jm="card-title"]'))).toBe(true); // the label sits inside the shaded accept block
     const marks = Array.from(content.querySelectorAll<HTMLElement>('s, strong')).map((el) => `${el.tagName}:${el.textContent}`);
     expect(marks).toEqual(['S:teh', 'STRONG:the', 'S:tomorow', 'STRONG:tomorrow']);
     expect(content.getAttribute('aria-label')).toBe('Accept 2 changes: Their going to the store tomorrow.');
@@ -440,7 +441,7 @@ describe('sentence card', () => {
       setItems([item(a, R1), item(b, R2), item(c, R3)]);
       hover(110, 110);
       expect(cardEl(h).dataset.suggestionIds).toBe('c a b');
-      const content = h.q('[data-jm="sentence-content"]');
+      const content = h.q('[data-jm="sentence-text"]');
       expect(content.textContent).toBe('Great newsGreat news! 🎉 tehthe team shipped it tomorowtomorrow.');
       expect(h.qAll('[data-jm="sentence-original"]')[0]!.textContent).toBe('Great news');
     });

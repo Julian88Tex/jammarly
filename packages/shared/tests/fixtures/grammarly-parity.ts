@@ -290,6 +290,7 @@ export const PARITY_CASES: ParityCase[] = [
   { text: 'Hi Tom,\n\nthanks for the quick reply.', rule: 'capitalization', original: 'thanks', replacement: 'Thanks' },
   { text: 'did you get a chance to review it.', rule: 'terminal_punctuation', original: '.', replacement: '?' },
   { text: 'We should discuss about the budget tomorrow.', rule: 'extra_word', original: 'discuss about', replacement: 'discuss' },
+  { text: 'It might could take longer than that.', rule: 'extra_word', original: 'might could', replacement: 'might' },
   { text: 'Can you explain me how the new process works?', rule: 'missing_word', original: 'explain me', replacement: 'explain to me' },
 
   // ---------------------------------------------------------------- cliches
