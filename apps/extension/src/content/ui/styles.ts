@@ -275,7 +275,8 @@ button {
 
 /* sentence card: the whole sentence inline, one button that accepts every change */
 .jm-card[data-mode="sentence"] { max-width: 420px; }
-.jm-sentence-title { flex: 1 1 auto; margin: 0; }
+.jm-sentence-title { flex: 1 1 auto; margin: 0; cursor: pointer; }
+.jm-card[data-mode="sentence"]:has(.jm-sentence-title:hover) .jm-sentence { background: color-mix(in srgb, var(--jm-accent) 8%, transparent); }
 .jm-sentence {
   display: block;
   width: 100%;

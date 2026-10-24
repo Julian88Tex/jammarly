@@ -161,6 +161,15 @@ describe('sentence card', () => {
     expect(h.q('.jm-dot').dataset.category).toBe('correctness'); // mixed: the hovered suggestion's category
   });
 
+  it('clicking the title applies every grouped suggestion, like clicking the sentence', () => {
+    setItems([item(S1(), R1), item(S2(), R2), item(S3(), R3)]);
+    hover(110, 110);
+    h.q<HTMLElement>('[data-jm="card-title"]').click();
+    expect(h.events.onAcceptAll).toHaveBeenCalledTimes(1);
+    expect(h.events.onAcceptAll).toHaveBeenLastCalledWith('f1', { group: 'all', suggestionIds: ['s1', 's2'] });
+    expect(cardOpen(h)).toBe(false);
+  });
+
   it('clicking the content or Accept applies every grouped suggestion via onAcceptAll with the exact ids', () => {
     setItems([item(S1(), R1), item(S2(), R2), item(S3(), R3)]);
     hover(110, 110);

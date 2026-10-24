@@ -500,11 +500,14 @@ export class SuggestionCard {
     const dotCategory = categories.size === 1 ? (members[0]?.category ?? hovered.category) : hovered.category;
     const allTierA = members.every((m) => m.tier === 'A');
 
+    // Like the sentence below it, the title accepts every change when clicked (Grammarly's whole top block does).
+    const title = h('h2', { class: 'jm-title jm-sentence-title', id: this.titleId, 'data-jm': 'card-title', title: 'Accept all changes', onclick: acceptAll }, sentenceTitle(members));
+    keepHostSelection(title);
     const head = h(
       'div',
       { class: 'jm-card-head', 'data-jm': 'card-head' },
       categoryDot(dotCategory),
-      h('h2', { class: 'jm-title jm-sentence-title', id: this.titleId, 'data-jm': 'card-title' }, sentenceTitle(members)),
+      title,
       allTierA ? h('span', { class: 'jm-chip', 'data-jm': 'card-badge', 'data-tier': 'A' }, 'Auto') : null,
       hostSafeButton(
         { class: 'jm-iconbtn jm-sm jm-card-close', 'data-jm': 'card-close', 'aria-label': 'Close', title: 'Close (Esc)', onclick: () => this.cb.onRequestClose() },

@@ -468,7 +468,8 @@ export function wordChoiceRule(ctx: RuleContext): void {
           emit('subject_verb_agreement', undefined, t, t, fix, `"${pv.text}" takes "${fix}", not "is".`, 0.9, true, t.end);
           break;
         }
-        const thereIs = w === "there's" ? ctx.isSentenceStart(t.start, true) : pv !== undefined && pv.norm === 'there' && ctx.isSentenceStart(pv.start, true);
+        // "Their is a few issues": the their/there rule fixes the first word, so the verb must agree too.
+        const thereIs = w === "there's" ? ctx.isSentenceStart(t.start, true) : pv !== undefined && (pv.norm === 'there' || pv.norm === 'their') && ctx.isSentenceStart(pv.start, true);
         if (!thereIs) break;
         let q = i + 1;
         if (THERE_IS_ADVERBS.has(nextSpaced(ts, i)?.norm ?? '')) q++;

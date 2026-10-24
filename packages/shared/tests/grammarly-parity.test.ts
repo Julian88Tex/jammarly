@@ -86,6 +86,7 @@ describe('Grammarly parity benchmark', () => {
     // missing comma); this list keeps them visible and reviewed.
     const ALLOWED_EXTRA = new Set<string>([
       'did you get a chance to review it.', // the lowercase sentence start is flagged too
+      'Their is still a few issues to fix.', // their -> There is flagged too; together they read "There are"
     ]);
     const extras: string[] = [];
     for (const c of PARITY_CASES) {

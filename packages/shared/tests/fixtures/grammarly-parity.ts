@@ -153,6 +153,7 @@ export const PARITY_CASES: ParityCase[] = [
   { text: "They doesn't reply to emails.", rule: 'subject_verb_agreement', original: "doesn't", replacement: "don't" },
   { text: 'There is many reasons to wait.', rule: 'subject_verb_agreement', original: 'is', replacement: 'are' },
   { text: "There's several options.", rule: 'subject_verb_agreement', original: "There's", replacement: 'There are' },
+  { text: 'Their is still a few issues to fix.', rule: 'subject_verb_agreement', original: 'is', replacement: 'are' },
   { text: 'They has already signed.', rule: 'subject_verb_agreement', original: 'has', replacement: 'have' },
 
   // ---------------------------------------------------------------- pronoun case, noun number
