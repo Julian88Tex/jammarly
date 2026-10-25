@@ -275,6 +275,9 @@ button {
 
 /* sentence card: the whole sentence inline, one button that accepts every change */
 .jm-card[data-mode="sentence"] { max-width: 420px; }
+.jm-accept-zone { margin: 0 -10px; padding: 6px 10px; border-radius: 8px; cursor: pointer; transition: background-color 120ms; }
+.jm-accept-zone:hover { background: color-mix(in srgb, var(--jm-accent) 12%, var(--jm-surface)); }
+.jm-accept-zone .jm-explanation { margin-bottom: 0; }
 .jm-sentence-head { position: absolute; top: 8px; right: 10px; min-height: 0; z-index: 1; }
 /* bleeds past the card padding so the shaded block, and the click target, reach the card's edges */
 .jm-sentence {

@@ -178,8 +178,8 @@ test.describe('in-page flow (mock engine)', () => {
     await expect.poll(async () => underlines.count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(6);
     const button = shadow(page).locator('[data-jm="button"]');
     await expect(button).toBeHidden();
-    // the hidden button still tracks status: wait for the deep pass so the suggestion set is final
-    await expect(button).toHaveAttribute('data-checked-by', 'deep', { timeout: 15_000 });
+    // the hidden button still tracks status: wait for the automatic check (the fast pass in hybrid) to land
+    await expect(button).toHaveAttribute('data-checked-by', 'fast', { timeout: 15_000 });
     await expect(button).toHaveAttribute('data-status', 'suggestions');
     const before = await ta.inputValue();
 

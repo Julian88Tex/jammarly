@@ -55,7 +55,9 @@ describe('card anatomy', () => {
     expect(h.q('[data-jm="card-close"]').getAttribute('aria-label')).toBe('Close');
     // anatomy order
     const order = Array.from(card.children).map((c) => (c as HTMLElement).dataset.jm);
-    expect(order).toEqual(['card-head', 'card-title', 'card-content', 'explanation', 'actions', 'more-panel', 'card-footer']);
+    expect(order).toEqual(['card-head', 'accept-zone', 'actions', 'more-panel', 'card-footer']);
+    const zone = Array.from(h.q('[data-jm="accept-zone"]').children).map((c) => (c as HTMLElement).dataset.jm);
+    expect(zone).toEqual(['card-title', 'card-content', 'explanation']);
     expect(h.root.querySelector('[data-jm="options"]')).toBeNull();
     expect(h.events.onCardShown).toHaveBeenCalledWith('f1', 's1');
     // tier A badge
@@ -128,6 +130,17 @@ describe('card anatomy', () => {
     expect(h.root.querySelector('[data-jm="card-badge"]')).toBeNull();
     expect(tierBadge(s)).toBeNull();
     expect(tierBadge(makeSuggestion({ id: 'x', tier: 'A' }))?.text).toBe('Auto');
+  });
+
+  it('clicking the title or explanation accepts; Learn more and flags do not', () => {
+    const long = 'The first sentence of this explanation is fairly long and detailed. The second sentence adds even more words so the whole thing passes the collapse threshold of one hundred and forty characters.';
+    open(makeSuggestion({ id: 'z1', category: 'clarity', tier: 'C', original: 'It', replacement: 'The venue', title: 'Clarify what this refers to', explanation: long }));
+    h.q<HTMLButtonElement>('[data-jm="learn-more"]').click();
+    expect(h.events.onAccept).not.toHaveBeenCalled();
+    h.q('[data-jm="card-title"]').click();
+    expect(h.events.onAccept).toHaveBeenCalledWith('f1', 'z1', undefined);
+    h.q('[data-jm="explanation"]').click();
+    expect(h.events.onAccept).toHaveBeenCalledTimes(2);
   });
 
   it('collapses long explanations behind "Learn more"', () => {

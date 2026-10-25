@@ -1,8 +1,9 @@
 /**
  * Per-field pass scheduling (ARCHITECTURE §3.3): local rules on every change, coalesced to one frame per 150 ms; a
  * fast pass after `fastPassIdleMs` idle or when the user ends a sentence; a deep pass after `deepPassIdleMs` idle, on
- * blur and on a paste of two or more sentences. Engine mode maps the intents: hybrid keeps both, quality sends 'deep'
- * for everything, economy sends 'fast' for everything. The session decides whether a request is actually needed
+ * blur and on a paste of two or more sentences. Engine mode maps the intents: quality sends 'deep' for everything,
+ * economy sends 'fast' for everything, and hybrid keeps the automatic checks on the fast pass (the deep pass costs
+ * about 20 times as much) and saves the deep pass for "Check now" and Accept everything. The session decides whether a request is actually needed
  * (dirty blocks, in-flight de-duplication); this class only owns the timing.
  */
 import type { CheckPass, EngineMode } from '@jammarly/shared/types';
@@ -40,6 +41,11 @@ export function passFor(intent: RequestedPass, mode: EngineMode): RequestedPass 
   if (mode === 'quality') return 'deep';
   if (mode === 'economy') return 'fast';
   return intent;
+}
+
+/** The pass an automatic deep intent (idle, blur, paste, attach) becomes: hybrid stays on the fast pass. */
+export function autoDeepPass(mode: EngineMode): RequestedPass {
+  return mode === 'quality' ? 'deep' : 'fast';
 }
 
 const TRAILING_CLOSERS_RE = /[\s"'”’)\]}»]+$/u;
@@ -85,7 +91,7 @@ export class Scheduler {
     if (this.disposed) return;
     this.scheduleRules();
     const fastPass = passFor('fast', this.config.mode);
-    const deepPass = passFor('deep', this.config.mode);
+    const deepPass = autoDeepPass(this.config.mode);
     if (!info.own) {
       if (isPasteLike(info.inputType) && countSentences(info.inserted) >= PASTE_SENTENCE_MIN) {
         this.clearPassTimers();
@@ -102,18 +108,18 @@ export class Scheduler {
     this.armTimers(fastPass, deepPass);
   }
 
-  /** The field lost focus: deep pass now (economy: fast). */
+  /** The field lost focus: the automatic deep pass now (hybrid and economy: fast). */
   blur(): void {
     if (this.disposed) return;
     this.clearPassTimers();
-    this.hooks.requestPass(passFor('deep', this.config.mode), 'blur');
+    this.hooks.requestPass(autoDeepPass(this.config.mode), 'blur');
   }
 
   /** A field with existing text was attached: check it right away, then let the deep pass follow after idle. */
   attach(hasText: boolean): void {
     if (this.disposed || !hasText) return;
     const fastPass = passFor('fast', this.config.mode);
-    const deepPass = passFor('deep', this.config.mode);
+    const deepPass = autoDeepPass(this.config.mode);
     this.hooks.requestPass(fastPass, 'attach');
     this.armDeep(deepPass, fastPass);
   }
@@ -129,7 +135,7 @@ export class Scheduler {
   afterApply(): void {
     if (this.disposed) return;
     this.scheduleRules();
-    this.armTimers(passFor('fast', this.config.mode), passFor('deep', this.config.mode));
+    this.armTimers(passFor('fast', this.config.mode), autoDeepPass(this.config.mode));
   }
 
   /** Coalesced rules run: at most one per RULES_COALESCE_MS, on the next frame/idle callback. */

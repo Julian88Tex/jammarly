@@ -486,7 +486,22 @@ export class SuggestionCard {
 
     const footer = opts.showIntro ? h('div', { class: 'jm-footer', 'data-jm': 'card-footer' }, INTRO_TEXT) : null;
 
-    setChildren(this.element, head, title, content, optionsEl, explEl, actions, morePanel, footer);
+    // Like the sentence card, the title, the change and the explanation form one block a click anywhere accepts.
+    // Buttons inside it (the replacement, Learn more) keep their own action.
+    let body: (Node | null)[] = [title, content, optionsEl, explEl];
+    if (canAccept) {
+      const zone = h('div', { class: 'jm-accept-zone', 'data-jm': 'accept-zone', title: 'Accept' }, title, content, explEl);
+      keepHostSelection(zone);
+      zone.addEventListener('click', (ev) => {
+        const target = ev.target as Element | null;
+        // Learn more re-renders itself out of the DOM, so test for any button, not one still inside the zone.
+        if (target?.closest('button')) return;
+        accept();
+      });
+      body = [zone, optionsEl];
+    }
+
+    setChildren(this.element, head, ...body, actions, morePanel, footer);
   }
 
   private renderSentence(opts: SentenceCardShowOptions): void {

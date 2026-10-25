@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Scheduler, countSentences, endsSentence, passFor, type PassTrigger, type RequestedPass } from '../../../src/content/controller/scheduler';
+import { Scheduler, autoDeepPass, countSentences, endsSentence, passFor, type PassTrigger, type RequestedPass } from '../../../src/content/controller/scheduler';
 import { FAKE_TIMER_APIS } from './helpers';
 
 function make(mode: 'hybrid' | 'quality' | 'economy' = 'hybrid') {
@@ -23,9 +23,11 @@ describe('Scheduler', () => {
     expect(passFor('deep', 'hybrid')).toBe('deep');
     expect(passFor('fast', 'quality')).toBe('deep');
     expect(passFor('deep', 'economy')).toBe('fast');
+    expect(autoDeepPass('hybrid')).toBe('fast');
+    expect(autoDeepPass('quality')).toBe('deep');
   });
 
-  it('hybrid: fast after fastPassIdleMs idle, deep after deepPassIdleMs; typing resets both timers', () => {
+  it('hybrid: fast after fastPassIdleMs idle and no automatic deep pass; typing resets the timer', () => {
     const { scheduler, requestPass } = make();
     scheduler.noteChange({ inserted: 'a', inputType: 'insertText', own: false });
     vi.advanceTimersByTime(500);
@@ -35,20 +37,19 @@ describe('Scheduler', () => {
     vi.advanceTimersByTime(100);
     expect(requestPass).toHaveBeenCalledTimes(1);
     expect(requestPass).toHaveBeenLastCalledWith('fast', 'idle');
-    vi.advanceTimersByTime(2500 - 700);
-    expect(requestPass).toHaveBeenCalledTimes(2);
-    expect(requestPass).toHaveBeenLastCalledWith('deep', 'idle');
+    vi.advanceTimersByTime(5000);
+    expect(requestPass).toHaveBeenCalledTimes(1);
     expect(scheduler.hasPendingPass()).toBe(false);
   });
 
-  it('sentence-ending punctuation or a newline requests the fast pass immediately and keeps the deep timer', () => {
+  it('sentence-ending punctuation or a newline requests the fast pass immediately', () => {
     const { scheduler, requestPass } = make();
     scheduler.noteChange({ inserted: '.', inputType: 'insertText', own: false });
     expect(requestPass).toHaveBeenCalledWith('fast', 'sentence-end');
     vi.advanceTimersByTime(700);
     expect(requestPass).toHaveBeenCalledTimes(1); // no second fast from the idle timer
     vi.advanceTimersByTime(1800);
-    expect(requestPass).toHaveBeenLastCalledWith('deep', 'idle');
+    expect(requestPass).toHaveBeenCalledTimes(1);
     scheduler.noteChange({ inserted: '\n', inputType: 'insertParagraph', own: false });
     expect(requestPass).toHaveBeenLastCalledWith('fast', 'sentence-end');
     expect(endsSentence('?"')).toBe(true);
@@ -57,12 +58,12 @@ describe('Scheduler', () => {
     expect(endsSentence('word')).toBe(false);
   });
 
-  it('a paste of two or more sentences requests the deep pass immediately; one sentence does not', () => {
+  it('a paste of two or more sentences requests a check immediately (fast in hybrid); one sentence does not', () => {
     const { scheduler, requestPass } = make();
     scheduler.noteChange({ inserted: 'Just one sentence here', inputType: 'insertFromPaste', own: false });
     expect(requestPass).not.toHaveBeenCalled();
     scheduler.noteChange({ inserted: 'First sentence. Second sentence.', inputType: 'insertFromPaste', own: false });
-    expect(requestPass).toHaveBeenCalledWith('deep', 'paste');
+    expect(requestPass).toHaveBeenCalledWith('fast', 'paste');
     expect(countSentences('First sentence. Second sentence.')).toBe(2);
     scheduler.noteChange({ inserted: 'First sentence. Second sentence.', inputType: 'insertFromDrop', own: false });
     expect(requestPass).toHaveBeenCalledTimes(2);
@@ -95,11 +96,11 @@ describe('Scheduler', () => {
     expect(requestPass).toHaveBeenCalledTimes(3);
   });
 
-  it('blur requests deep right away and cancels pending timers', () => {
+  it('blur requests a check right away (fast in hybrid) and cancels pending timers', () => {
     const { scheduler, requestPass } = make();
     scheduler.noteChange({ inserted: 'a', inputType: 'insertText', own: false });
     scheduler.blur();
-    expect(requestPass).toHaveBeenCalledWith('deep', 'blur');
+    expect(requestPass).toHaveBeenCalledWith('fast', 'blur');
     expect(scheduler.hasPendingPass()).toBe(false);
     vi.advanceTimersByTime(5000);
     expect(requestPass).toHaveBeenCalledTimes(1);
@@ -131,19 +132,19 @@ describe('Scheduler', () => {
     expect(requestPass).toHaveBeenCalledWith('fast', 'idle');
   });
 
-  it('attach(true) checks existing text right away and lets the deep pass follow; checkNow forces deep; dispose stops everything', () => {
+  it('attach(true) checks existing text right away; only checkNow runs deep in hybrid; dispose stops everything', () => {
     const { scheduler, requestPass } = make();
     scheduler.attach(false);
     expect(requestPass).not.toHaveBeenCalled();
     scheduler.attach(true);
     expect(requestPass).toHaveBeenLastCalledWith('fast', 'attach');
     vi.advanceTimersByTime(2500);
-    expect(requestPass).toHaveBeenLastCalledWith('deep', 'idle');
+    expect(requestPass).toHaveBeenCalledTimes(1);
     scheduler.checkNow();
     expect(requestPass).toHaveBeenLastCalledWith('deep', 'manual');
     scheduler.noteChange({ inserted: 'a', inputType: 'insertText', own: false });
     scheduler.dispose();
     vi.advanceTimersByTime(5000);
-    expect(requestPass).toHaveBeenCalledTimes(3);
+    expect(requestPass).toHaveBeenCalledTimes(2);
   });
 });

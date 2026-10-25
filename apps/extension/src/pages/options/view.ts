@@ -33,7 +33,7 @@ const SECTION_TITLES: Record<Route, string> = {
 };
 
 const MODE_OPTIONS: { value: EngineMode; label: string; description: string }[] = [
-  { value: 'hybrid', label: 'Hybrid', description: 'A fast pass while you type, a deep pass when you pause. Best balance of speed and cost.' },
+  { value: 'hybrid', label: 'Hybrid', description: 'Quick checks while you type, a thorough check when you press Accept everything or Check now. Best balance of speed and cost.' },
   { value: 'quality', label: 'Quality', description: 'Deep pass only. The most thorough suggestions; roughly 5× the cost of economy.' },
   { value: 'economy', label: 'Economy', description: 'Fast pass only. Cheapest and quickest; fewer nuanced style suggestions.' },
 ];

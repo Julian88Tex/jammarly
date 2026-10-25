@@ -107,7 +107,18 @@ export function createWorker(deps: CoreDeps): Worker {
   // A cold start (not only chrome's onStartup) also surfaces requests left in flight by a terminated worker.
   const ready = core.ready.then(onStartup);
   // Unpacked installs only: reload when a newer build lands in the extension folder.
-  void devReload.start().catch((err) => console.debug('[jammarly] dev reload unavailable', err));
+  // It also checks right away (a worker wakes on Chrome start and on page loads) and whenever a page connects, so a
+  // pulled build lands without waiting for the alarm, which Chrome may delay while idle.
+  const devCheck = (): void => {
+    void devReload.check().catch((err) => console.debug('[jammarly] dev reload check failed', err));
+  };
+  void devReload
+    .start()
+    .then((armed) => {
+      if (armed) devCheck();
+    })
+    .catch((err) => console.debug('[jammarly] dev reload unavailable', err));
+  c?.runtime?.onConnect?.addListener(() => devCheck());
 
   return { core, hub, ready, onInstalled, onStartup };
 }
