@@ -7,6 +7,27 @@ It underlines problems in any web text field, shows a Grammarly-style hover card
 one thing Grammarly never shipped: **Accept all** for grammar, for style and tone, or for everything at once, as one
 undoable transaction with per-item revert.
 
+## Install (ready-made build)
+
+You need Chrome 120 or newer.
+
+1. Get the build:
+   ```bash
+   git clone -b extension-build https://github.com/Julian88Tex/jammarly.git ~/Jammarly
+   ```
+2. Open `chrome://extensions`, turn on **Developer mode** (top right), click **Load unpacked** and pick the
+   `~/Jammarly` folder.
+3. The first-run page opens. Read the disclosure, click **I agree and continue**, paste your Anthropic API key and press
+   **Test key**. Your key stays on this device.
+4. Click into any text field. Local checks appear right away; Claude suggestions follow when you pause typing.
+
+To update, run `git -C ~/Jammarly pull`. Jammarly notices the new files within a minute and reloads itself.
+
+## Releases
+
+Every change merges into `main`. Each push to `main` that passes typecheck and tests publishes the extension to the
+`extension-build` branch (`.github/workflows/publish-build.yml`), which is what the install above loads.
+
 ## What it does
 
 - **Four suggestion categories** with Grammarly's colors: correctness (red), clarity (blue), engagement (green),

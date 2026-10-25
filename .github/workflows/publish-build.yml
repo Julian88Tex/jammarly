@@ -1,10 +1,11 @@
 name: Publish extension build
 
-# Keeps the extension-build branch equal to the latest passing build, so a Chrome "Load unpacked" folder that is
-# a checkout of that branch updates with a plain `git pull` (and the extension then reloads itself).
+# Keeps the extension-build branch equal to the latest passing build of main, so a Chrome "Load unpacked" folder that
+# is a checkout of that branch updates with a plain `git pull` (and the extension then reloads itself). Releases only
+# come from main: merge a change into main and the new version is published.
 on:
   push:
-    branches: [main, feat/jammarly-extension]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
