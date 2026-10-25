@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: contenteditable</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 15px; line-height: 1.6; margin: 40px; }
+  .editor { width: 560px; min-height: 160px; padding: 14px; border: 1px solid #bbb; border-radius: 6px; outline: none; }
+  .gmail-like { font-family: Arial; }
+  .scroller { height: 120px; overflow: auto; border: 1px dashed #999; width: 560px; }
+</style>
+</head>
+<body>
+<h1>Contenteditable fixture</h1>
+<div id="editor" class="editor" contenteditable="true" role="textbox" aria-multiline="true">
+  <div>Their going to the the store tomorow.</div>
+  <div>I <b>definately</b> think that we should of went earlier, irregardless of the weather.</div>
+  <div><br></div>
+  <div>Kind regards,<br>Sam</div>
+</div>
+
+<h2>Gmail-like compose body</h2>
+<div id="gmail" class="editor gmail-like" contenteditable="true" aria-label="Message Body" role="textbox" g_editable="true">
+  <div dir="ltr">Hi team,<div><br></div><div>I just wanted to kind of touch base and see if maybe you could possibly send me the the report when you get a chance.</div></div>
+</div>
+
+<h2>Editor inside a scroll container</h2>
+<div class="scroller">
+  <div id="scrolled" class="editor" contenteditable="true">
+    <p>Paragraph one has an error: recieve.</p>
+    <p>Paragraph two is fine.</p>
+    <p>Paragraph three has another: seperate.</p>
+    <p>Paragraph four is fine.</p>
+    <p>Paragraph five has one more: occured.</p>
+  </div>
+</div>
+
+<h2>Opted out</h2>
+<div id="optout" class="editor" contenteditable="true" data-enable-grammarly="false">teh teh opted out</div>
+</body>
+</html>

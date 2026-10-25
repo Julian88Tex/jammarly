@@ -1,0 +1,57 @@
+name: Publish extension build
+
+# Keeps the extension-build branch equal to the latest passing build of main, so a Chrome "Load unpacked" folder that
+# is a checkout of that branch updates with a plain `git pull` (and the extension then reloads itself). Releases only
+# come from main: merge a change into main and the new version is published.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-extension-build
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build --workspace apps/extension
+      - name: Commit the build to the extension-build branch
+        env:
+          SOURCE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth=1 origin extension-build; then
+            git worktree add publish FETCH_HEAD
+          else
+            git worktree add --detach publish
+            git -C publish checkout --orphan extension-build
+            git -C publish rm -rfq . || true
+          fi
+          find publish -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R apps/extension/dist/. publish/
+          cp apps/extension/BUILD_BRANCH_README.md publish/README.md
+          cd publish
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+            exit 0
+          fi
+          VERSION=$(node -p "require('./manifest.json').version")
+          git commit -qm "Jammarly ${VERSION} from ${SOURCE_REF}@${GITHUB_SHA::7}"
+          git push origin HEAD:refs/heads/extension-build

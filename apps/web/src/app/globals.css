@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+/* Brand tokens (architecture §3.5): brand green, interactive accent, four suggestion categories. */
+@theme {
+  --color-brand: #0e9a74;
+  --color-brand-strong: #0b7a5c;
+  --color-accent: #2551da;
+  --color-accent-strong: #1d41b0;
+  --color-correctness: #e0372c;
+  --color-clarity: #2a7de1;
+  --color-engagement: #1d9f7a;
+  --color-delivery: #8b5cf6;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --text: #171a1f;
+  --muted: #626b78;
+  --line: #e3e6eb;
+  --danger: #c62828;
+  --warn: #b26a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --text: #e7e9ee;
+    --muted: #98a1b0;
+    --line: #2a2f3a;
+    --danger: #ff6b61;
+    --warn: #f0b24a;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+.field {
+  @apply w-full rounded-md border border-line bg-panel px-2.5 py-1.5 text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-primary {
+  @apply border-brand bg-brand text-white hover:bg-brand-strong;
+}
+.btn-secondary {
+  @apply border-line bg-panel text-ink hover:bg-panel-2;
+}
+.btn-danger {
+  @apply border-danger/40 bg-panel text-danger hover:bg-danger/10;
+}
+.btn-sm {
+  @apply px-2 py-1 text-[13px];
+}
+
+.meter {
+  @apply h-2 w-full overflow-hidden rounded-full bg-panel-2;
+}
+.meter > span {
+  @apply block h-full rounded-full bg-brand;
+}
+.meter.warn > span {
+  @apply bg-warn;
+}
+.meter.over > span {
+  @apply bg-danger;
+}

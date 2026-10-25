@@ -1,0 +1,21 @@
+{
+  "name": "jammarly",
+  "version": "0.1.0",
+  "description": "Jammarly: a Grammarly-class writing assistant Chrome extension powered by Claude, with a companion web app for sync, tuning and tone learning.",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace apps/extension",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "extension": "npm --workspace apps/extension run",
+    "web": "npm --workspace apps/web run"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "license": "MIT"
+}

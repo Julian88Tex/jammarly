@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: framework-controlled textarea</title>
+<style> body { font-family: system-ui, sans-serif; margin: 40px; } textarea { width: 480px; height: 120px; font: inherit; padding: 10px; } </style>
+</head>
+<body>
+<h1>Controlled textarea fixture</h1>
+<p>This page simulates a React-style controlled component: the "model" below only updates when a real
+<code>input</code> event is dispatched. Programmatic value assignment without an event will desync it.</p>
+<textarea id="controlled">This sentance has a speling mistake.</textarea>
+<pre id="model"></pre>
+<script>
+  const ta = document.getElementById('controlled');
+  const model = document.getElementById('model');
+  let state = ta.value;
+  const render = () => { model.textContent = 'model: ' + JSON.stringify(state); };
+  // React-like: track the value through the native setter, so direct .value writes without events are detectable.
+  const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+  Object.defineProperty(ta, 'value', {
+    get() { return desc.get.call(this); },
+    set(v) { desc.set.call(this, v); /* tracked, but state only updates on input event */ },
+    configurable: true,
+  });
+  ta.addEventListener('input', () => { state = ta.value; render(); });
+  render();
+</script>
+</body>
+</html>

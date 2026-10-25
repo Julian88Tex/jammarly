@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: overlay UI harness</title>
+<style>
+  body { font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; margin: 40px; min-height: 2000px; }
+  .editor { width: 560px; min-height: 160px; padding: 14px; border: 1px solid #bbb; border-radius: 6px; outline: none; }
+  #chat { width: 420px; height: 24px; box-sizing: border-box; padding: 2px 6px; font: 14px Arial; margin-top: 24px; }
+  #log { margin-top: 24px; color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Overlay harness</h1>
+<div id="editor" class="editor" contenteditable="true" role="textbox" aria-multiline="true">
+  <div>Their going to <span data-err="s1" data-fix="the" data-rule="spelling">teh</span> store <span data-err="s2" data-fix="tomorrow" data-rule="spelling" data-alts="tomorrow's">tomorow</span>.</div>
+  <div>I think that <span data-err="s3" data-fix="to" data-category="clarity" data-tier="B" data-rule="wordy_phrase" data-title="Reduce wordiness" data-explanation="A shorter phrase keeps the sentence moving. Readers lose the thread when every clause carries filler words that add length without adding meaning to the sentence.">in order to</span> succeed we should start now.</div>
+</div>
+<label for="chat">Chat prompt (24 px)</label><br>
+<input id="chat" type="text" value="hello their">
+<p id="log">Clicks that reach the page are counted here: <span id="page-clicks">0</span></p>
+<script>
+  document.addEventListener('pointerdown', () => { const el = document.getElementById('page-clicks'); el.textContent = String(Number(el.textContent) + 1); });
+</script>
+<script src="_build/overlay-harness.js"></script>
+</body>
+</html>

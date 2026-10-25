@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: Google Docs canvas mode (mock)</title>
+<!--
+  Reproduces Docs' canvas-mode DOM and mocks its annotated-canvas API (research 06 §1.2, §1.3, §7.2) so the bridge and
+  the adapter can be driven in a real Chromium without an account:
+    #docs-editor > .kix-appview-editor-container > .kix-appview-editor > .kix-page-paginated >
+      canvas.kix-canvas-tile-content + div.kix-canvas-tile-content > svg > g[transform] > rect[aria-label][x][y][width][height][data-font-css]
+    .kix-cursor-caret, .kix-canvas-tile-selection, .kix-rotatingtilemanager
+    iframe.docs-texteventtarget-iframe (about:blank) holding a focused div[contenteditable="true"]
+  The inline script is the MAIN-world mock: window._docs_annotate_getAnnotatedText(id) returns a model only when
+  window._docs_annotate_canvas_by_ext equals the id in ?expect= (?expect=none never activates). getText() is
+  "\u0003" + text + "\n"; getSelection()/setSelection() move the caret (and blur the editable, as Docs does); a paste on
+  the iframe editable applies text/plain at the selection, strips ASCII edge spaces (NBSP is kept and, like Docs,
+  becomes a regular space), re-renders the rects and updates the text. One word is rendered as "This is pa" + "ragr" +
+  "aph" across a tile boundary (rikaikun's sample). The script is also served to the extension's content script when
+  the built extension opens this page over http, so it only ever uses createElement(NS)/textContent/setAttribute.
+  Query: ?expect=<id|none>&zoom=<factor>. Page API for the spec: window.__gdocsFixture (data and helpers only).
+-->
+<style>
+  body { margin: 24px; font-family: Arial, sans-serif; background: #f8f9fa; color: #202124; }
+  h1 { font-size: 18px; }
+  #notes { width: 420px; height: 72px; font: inherit; }
+  #docs-editor { margin-top: 16px; }
+  .kix-appview-editor-container { height: 540px; }
+  .kix-appview-editor { position: relative; height: 100%; overflow: auto; background: #f1f3f4; }
+  .kix-page-paginated { position: relative; margin: 16px auto; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
+  .kix-page-paginated canvas.kix-canvas-tile-content { position: absolute; left: 0; top: 0; }
+  .kix-page-paginated div.kix-canvas-tile-content { position: absolute; left: 0; top: 0; }
+  .kix-page-paginated div.kix-canvas-tile-content svg { display: block; overflow: visible; }
+  .kix-canvas-tile-selection, .kix-rotatingtilemanager { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
+  .kix-cursor-caret { position: absolute; width: 2px; background: #000; }
+  iframe.docs-texteventtarget-iframe { position: absolute; left: 8px; top: 8px; width: 2px; height: 2px; border: 0; opacity: 0; }
+</style>
+</head>
+<body>
+<h1>Google Docs canvas fixture</h1>
+<p id="info"></p>
+<label for="notes">Ordinary field outside the editor (a comment box stands in for it)</label><br>
+<textarea id="notes">Their going to the the store tomorow.</textarea>
+<div id="docs-editor">
+  <div class="kix-appview-editor-container">
+    <div class="kix-appview-editor">
+      <div class="kix-page-paginated" id="page"></div>
+    </div>
+  </div>
+</div>
+<iframe class="docs-texteventtarget-iframe" title="Docs key-event sink"></iframe>
+<script>
+(function () {
+  'use strict';
+  var params = new URLSearchParams(location.search);
+  var EXPECTED = params.get('expect') || 'none';
+  var initialZoom = Number(params.get('zoom')) || 1;
+  // Read at script time: the bootstrap (document_start / addInitScript) must already have announced its id.
+  var flagAtLoad = window._docs_annotate_canvas_by_ext;
+
+  var SENTINEL = '\u0003';
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  // Unscaled CSS px (US Letter at 72 dpi, 1" margins); Docs reports rect attributes in these units and puts the zoom
+  // into the group transform.
+  var PAGE_W = 612, PAGE_H = 792, MARGIN_X = 72, MARGIN_Y = 72, CONTENT_W = 468, LINE_H = 17, ASCENT = 13;
+  var BASE_FONT = 'normal 400 14.6667px Arial';
+  var EMPHASIS_FONT = 'italic 700 14.6667px Arial';
+  // A styled span splits a run; a tile boundary falls right before each marker: "This is pa" | "ragr" + "aph two.".
+  var STYLE_SPANS = [{ marker: 'ragr', font: EMPHASIS_FONT }];
+  var TILE_BREAKS = ['ragraph'];
+
+  var state = {
+    text: 'The meeting is tomorow at noon.\n' +
+      'This is paragraph two. We will discuss the the budget.\n' +
+      'A third line that is long enough to wrap onto a second line inside the page so that a soft line wrap drops its trailing space.',
+    sel: { anchor: 1, focus: 1 },
+    zoom: initialZoom,
+    runs: [],
+  };
+  var log = { calls: [], pastes: [], selections: [], statusEvents: [], textEvents: 0 };
+
+  var page = document.getElementById('page');
+  var info = document.getElementById('info');
+  var mctx = document.createElement('canvas').getContext('2d');
+  function measure(text, font) {
+    mctx.font = font;
+    return mctx.measureText(text).width;
+  }
+  function scaledFont(font, z) {
+    return font.replace(/([\d.]+)px/, function (_m, n) { return (Number(n) * z) + 'px'; });
+  }
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+  function clampRaw(n) { return clamp(Math.trunc(Number(n) || 0), 1, state.text.length + 1); }
+  function occurrences(text, marker) {
+    var out = [];
+    var i = text.indexOf(marker);
+    while (i >= 0) { out.push(i); i = text.indexOf(marker, i + 1); }
+    return out;
+  }
+
+  /** Greedy word wrap per paragraph; runs are cut at style-span edges and tile breaks (body offsets). */
+  function layoutText(text) {
+    var runs = [];
+    var breaks = [];
+    TILE_BREAKS.forEach(function (m) { breaks = breaks.concat(occurrences(text, m)); });
+    breaks.sort(function (a, b) { return a - b; });
+    var spans = [];
+    STYLE_SPANS.forEach(function (s) {
+      occurrences(text, s.marker).forEach(function (i) { spans.push({ start: i, end: i + s.marker.length, font: s.font }); });
+    });
+    var cuts = {};
+    spans.forEach(function (s) { cuts[s.start] = true; cuts[s.end] = true; });
+    breaks.forEach(function (b) { cuts[b] = true; });
+    function tileOf(off) { var t = 0; for (var i = 0; i < breaks.length; i++) if (off >= breaks[i]) t = i + 1; return t; }
+    function fontAt(off) { for (var i = 0; i < spans.length; i++) if (off >= spans[i].start && off < spans[i].end) return spans[i].font; return BASE_FONT; }
+
+    var offset = 0;
+    var lineIndex = 0;
+    text.split('\n').forEach(function (p) {
+      var lines = [];
+      var line = null;
+      var pos = offset;
+      p.split(' ').forEach(function (w) {
+        var ws = pos, we = pos + w.length;
+        pos = we + 1;
+        if (line === null) { line = { start: ws, end: we }; return; }
+        if (measure(text.slice(line.start, we), BASE_FONT) <= CONTENT_W) line.end = we;
+        else { lines.push(line); line = { start: ws, end: we }; }
+      });
+      if (line !== null) lines.push(line);
+      lines.forEach(function (ln) {
+        var x = 0;
+        var s = ln.start;
+        while (s < ln.end) {
+          var e = ln.end;
+          for (var c = s + 1; c < ln.end; c++) if (cuts[c]) { e = c; break; }
+          var piece = text.slice(s, e);
+          var font = fontAt(s);
+          runs.push({ text: piece, start: s, end: e, x: x, y: lineIndex * LINE_H, font: font, tile: tileOf(s), line: lineIndex });
+          x += measure(piece, font);
+          s = e;
+        }
+        lineIndex++;
+      });
+      offset += p.length + 1;
+    });
+    return runs;
+  }
+
+  function caretPosition(rawOffset) {
+    var body = clamp(rawOffset - 1, 0, state.text.length);
+    var best = null;
+    for (var i = 0; i < state.runs.length; i++) {
+      var r = state.runs[i];
+      if (body >= r.start && body < r.end) { best = r; break; }
+      if (body === r.end) best = r;
+    }
+    if (!best) return { x: 0, y: 0 };
+    return { x: best.x + measure(state.text.slice(best.start, body), best.font), y: best.y };
+  }
+
+  var caretEl = null;
+  function renderCaret() {
+    if (!caretEl) return;
+    var z = state.zoom;
+    var c = caretPosition(state.sel.focus);
+    caretEl.style.left = (z * (MARGIN_X + c.x)) + 'px';
+    caretEl.style.top = (z * (MARGIN_Y + c.y)) + 'px';
+    caretEl.style.height = (z * LINE_H) + 'px';
+  }
+
+  function render() {
+    var z = state.zoom;
+    state.runs = layoutText(state.text);
+    while (page.firstChild) page.removeChild(page.firstChild);
+    page.style.width = (PAGE_W * z) + 'px';
+    page.style.height = (PAGE_H * z) + 'px';
+    var tiles = 1;
+    state.runs.forEach(function (r) { tiles = Math.max(tiles, r.tile + 1); });
+    for (var t = 0; t < tiles; t++) {
+      var canvas = document.createElement('canvas');
+      canvas.className = 'kix-canvas-tile-content';
+      canvas.setAttribute('width', String(PAGE_W * z));
+      canvas.setAttribute('height', String(PAGE_H * z));
+      canvas.style.width = (PAGE_W * z) + 'px';
+      canvas.style.height = (PAGE_H * z) + 'px';
+      var ctx = canvas.getContext('2d');
+      var tileDiv = document.createElement('div');
+      tileDiv.className = 'kix-canvas-tile-content';
+      tileDiv.setAttribute('data-tile', String(t));
+      var svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('width', String(PAGE_W * z));
+      svg.setAttribute('height', String(PAGE_H * z));
+      var g = document.createElementNS(SVG_NS, 'g');
+      g.setAttribute('transform', 'matrix(' + [z, 0, 0, z, MARGIN_X * z, MARGIN_Y * z].join(',') + ')');
+      state.runs.forEach(function (r) {
+        if (r.tile !== t) return;
+        if (ctx) {
+          ctx.font = scaledFont(r.font, z);
+          ctx.fillStyle = '#000';
+          ctx.fillText(r.text, z * (MARGIN_X + r.x), z * (MARGIN_Y + r.y + ASCENT));
+        }
+        var rect = document.createElementNS(SVG_NS, 'rect');
+        rect.setAttribute('aria-label', r.text);
+        rect.setAttribute('x', String(r.x));
+        rect.setAttribute('y', String(r.y));
+        rect.setAttribute('width', String(measure(r.text, r.font)));
+        rect.setAttribute('height', String(LINE_H));
+        rect.setAttribute('fill', 'none');
+        rect.setAttribute('data-font-css', r.font);
+        g.appendChild(rect);
+      });
+      svg.appendChild(g);
+      tileDiv.appendChild(svg);
+      page.appendChild(canvas);
+      page.appendChild(tileDiv);
+    }
+    var selection = document.createElement('div');
+    selection.className = 'kix-canvas-tile-selection';
+    page.appendChild(selection);
+    var tileManager = document.createElement('div');
+    tileManager.className = 'kix-rotatingtilemanager';
+    page.appendChild(tileManager);
+    caretEl = document.createElement('div');
+    caretEl.className = 'kix-cursor-caret';
+    page.appendChild(caretEl);
+    renderCaret();
+  }
+
+  // ---- hidden input sink -------------------------------------------------------------------------------------------
+  var frame = document.querySelector('iframe.docs-texteventtarget-iframe');
+  var idoc = frame.contentDocument;
+  var editable = idoc.createElement('div');
+  editable.setAttribute('contenteditable', 'true');
+  editable.setAttribute('aria-label', 'Document content');
+  idoc.body.appendChild(editable);
+  editable.addEventListener('paste', function (ev) {
+    var payload = ev.clipboardData ? ev.clipboardData.getData('text/plain') : '';
+    var focused = idoc.activeElement === editable;
+    var entry = { payload: payload, focused: focused, applied: false, text: null };
+    log.pastes.push(entry);
+    ev.preventDefault();
+    if (!focused) return; // Docs routes input only to its focused sink
+    // Docs strips leading/trailing ASCII spaces from a plain-text paste; NBSP survives and becomes a regular space.
+    var cleaned = payload.replace(/^ +/, '').replace(/ +$/, '').replace(/ /g, ' ');
+    if (cleaned.length === 0) return; // an empty paste is a no-op in Docs
+    var a = clamp(Math.min(state.sel.anchor, state.sel.focus) - 1, 0, state.text.length);
+    var b = clamp(Math.max(state.sel.anchor, state.sel.focus) - 1, 0, state.text.length);
+    state.text = state.text.slice(0, a) + cleaned + state.text.slice(b);
+    var caret = a + cleaned.length + 1;
+    state.sel = { anchor: caret, focus: caret };
+    entry.applied = true;
+    entry.text = state.text;
+    render();
+  });
+  editable.focus();
+
+  // ---- the annotated-text model ------------------------------------------------------------------------------------
+  var model = {
+    getText: function () { return SENTINEL + state.text + '\n'; },
+    getSelection: function () { return [{ anchor: state.sel.anchor, focus: state.sel.focus }]; },
+    setSelection: function (start, end) {
+      state.sel = { anchor: clampRaw(start), focus: clampRaw(end) };
+      log.selections.push([start, end]);
+      renderCaret();
+      // Verified live (FluentTyper): setSelection blurs the editable while the frame itself stays focused.
+      if (idoc.activeElement === editable) editable.blur();
+    },
+    getAnnotations: function () { return []; },
+  };
+  window._docs_annotate_getAnnotatedText = function (id) {
+    var flag = window._docs_annotate_canvas_by_ext;
+    var accepted = EXPECTED !== 'none' && typeof flag === 'string' && flag === EXPECTED && (id === undefined || id === EXPECTED);
+    log.calls.push({ id: id, flag: flag, accepted: accepted });
+    return Promise.resolve(accepted ? model : undefined);
+  };
+
+  document.addEventListener('jammarly:gdocs-status', function (ev) {
+    var d = ev.detail;
+    var parsed = d;
+    if (typeof d === 'string') { try { parsed = JSON.parse(d); } catch (e) { parsed = null; } }
+    log.statusEvents.push({ detailType: d === null ? 'null' : typeof d, detail: parsed });
+  }, true);
+  document.addEventListener('jammarly:gdocs-text', function () { log.textEvents++; }, true);
+
+  function pageRect() { return page.getBoundingClientRect(); }
+  window.__gdocsFixture = {
+    expected: EXPECTED,
+    flagAtLoad: flagAtLoad,
+    zoom: function () { return state.zoom; },
+    setZoom: function (z) { state.zoom = Number(z) || 1; render(); },
+    text: function () { return state.text; },
+    raw: function () { return model.getText(); },
+    /** Simulates a collaborator: replaces the body text; the bridge's poll picks it up. */
+    setText: function (t) { state.text = String(t); state.sel = { anchor: clampRaw(state.sel.anchor), focus: clampRaw(state.sel.focus) }; render(); },
+    selection: function () { return { anchor: state.sel.anchor, focus: state.sel.focus }; },
+    caretRect: function () { var r = caretEl.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; },
+    sinkFocused: function () { return idoc.activeElement === editable; },
+    /** Viewport rects (one per run) for body offsets [start, end), from the fixture's own layout. */
+    rectsFor: function (start, end) {
+      var z = state.zoom, pr = pageRect(), out = [];
+      state.runs.forEach(function (r) {
+        var s = Math.max(start, r.start), e = Math.min(end, r.end);
+        if (s >= e) return;
+        var left = pr.left + z * (MARGIN_X + r.x + measure(state.text.slice(r.start, s), r.font));
+        var width = z * measure(state.text.slice(s, e), r.font);
+        var top = pr.top + z * (MARGIN_Y + r.y);
+        out.push({ left: left, top: top, right: left + width, bottom: top + z * LINE_H, width: width, height: z * LINE_H, tile: r.tile });
+      });
+      return out;
+    },
+    runsFor: function (start, end) {
+      return state.runs.filter(function (r) { return Math.max(start, r.start) < Math.min(end, r.end); }).map(function (r) { return { tile: r.tile, text: r.text, font: r.font, line: r.line }; });
+    },
+    calls: log.calls,
+    pastes: log.pastes,
+    selections: log.selections,
+    statusEvents: log.statusEvents,
+    textEventCount: function () { return log.textEvents; },
+  };
+
+  info.textContent = 'expect=' + EXPECTED + ' zoom=' + initialZoom + ' flagAtLoad=' + String(flagAtLoad);
+  render();
+})();
+</script>
+</body>
+</html>
