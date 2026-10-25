@@ -4,7 +4,7 @@ import { DEFAULT_DEVICE_SETTINGS } from '@jammarly/shared/types';
 import type { LearnedRuleState, ProfileDocument } from '@jammarly/shared/profile';
 import { defaultProfile } from '@jammarly/shared/profile';
 import { applyEdits, countWords, splitParagraphs } from '@jammarly/shared/text';
-import { createEngine, computeCacheKey, MAX_BLOCKS_PER_CALL, shardBlocks, type EngineMessage } from '../../src/background/engine/orchestrator';
+import { createEngine, computeCacheKey, MAX_BLOCKS_PER_CALL, shardBlocks, splitForSpeed, SPEED_SPLIT_WORDS, type EngineMessage } from '../../src/background/engine/orchestrator';
 import { createBlockCache } from '../../src/background/engine/cache';
 import { createMockProvider, requestForBlocks } from '../../src/background/engine/mock';
 import type { Provider, ProviderCheckInput, ProviderResult } from '../../src/background/engine/provider';
@@ -62,7 +62,7 @@ interface Harness {
   configFor(host: string): EffectiveConfig;
 }
 
-function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>; profile?: ProfileDocument; learned?: LearnedStateView; maxConcurrent?: number; tone?: boolean; keepalive?: { begin(): void; end(): void }; owedRetryMs?: number } = {}): Harness {
+function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>; profile?: ProfileDocument; learned?: LearnedStateView; maxConcurrent?: number; tone?: boolean; keepalive?: { begin(): void; end(): void }; owedRetryMs?: number; speedSplitWords?: number } = {}): Harness {
   const settings: DeviceSettings = { ...DEFAULT_DEVICE_SETTINGS, provider: 'mock', ...opts.settings };
   const profile = opts.profile ?? defaultProfile();
   const learned: LearnedStateView = opts.learned ?? NO_LEARNED;
@@ -88,6 +88,8 @@ function harness(opts: { provider?: Provider; settings?: Partial<DeviceSettings>
     ...(opts.tone ? { tone: createToneRunner() } : {}),
     ...(opts.keepalive ? { keepalive: opts.keepalive } : {}),
     ...(opts.maxConcurrent !== undefined ? { maxConcurrent: opts.maxConcurrent } : {}),
+    // Most tests count calls; splitting the deep pass for speed has its own test.
+    speedSplitWords: opts.speedSplitWords ?? Number.POSITIVE_INFINITY,
     rateLimit: { minWaitMs: 1, maxWaitMs: 20, backoffMs: [5, 10], owedRetryMs: opts.owedRetryMs ?? 60_000 },
   });
   const configFor = (host: string): EffectiveConfig =>
@@ -582,6 +584,23 @@ describe('request budget for low-tier keys', () => {
     // Now: one call per pass.
     expect(MAX_BLOCKS_PER_CALL).toBeGreaterThanOrEqual(40);
     expect(shardBlocks(paragraphs)).toHaveLength(1);
+  });
+
+  it('the deep pass splits a longer email into up to three side-by-side calls of whole paragraphs', async () => {
+    const paragraphs = splitParagraphs(EMAIL);
+    const parts = splitForSpeed([paragraphs]);
+    expect(parts.length).toBe(3);
+    expect(parts.flat().map((p) => p.index)).toEqual(paragraphs.map((p) => p.index));
+    expect(splitForSpeed([paragraphs.slice(0, 1)])).toHaveLength(1);
+    expect(splitForSpeed([paragraphs], 10_000)).toHaveLength(1);
+
+    const provider = budgetProvider({ delayMs: 5 });
+    const h = harness({ provider, settings: { mode: 'quality' }, speedSplitWords: SPEED_SPLIT_WORDS });
+    await h.check(request(EMAIL, { pass: 'deep', version: 1 }));
+    await settle();
+    const deep = provider.calls.filter((c) => c.pass === 'deep');
+    expect(deep.length).toBe(3);
+    expect(deep.reduce((n, c) => n + c.blockIds.length, 0)).toBe(6);
   });
 
   it('first pause on the email in hybrid mode: one fast call, one deep call, no tone call, never at the same time', async () => {

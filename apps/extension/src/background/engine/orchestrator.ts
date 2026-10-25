@@ -116,6 +116,8 @@ export interface EngineDeps {
   tone?: ToneRunner;
   now?: () => number;
   maxConcurrent?: number;
+  /** Deep calls over this many words are split for speed (splitForSpeed); Infinity turns splitting off. */
+  speedSplitWords?: number;
   /** Rate-limit handling (tests shrink the waits). */
   rateLimit?: { retries?: number; minWaitMs?: number; maxWaitMs?: number; backoffMs?: number[]; owedRetryMs?: number };
 }
@@ -194,6 +196,42 @@ export function shardBlocks(paragraphs: readonly Paragraph[], maxBlocks = MAX_BL
     words += w;
   }
   if (current.length > 0) out.push(current);
+  return out;
+}
+
+/** A deep call over this many words is split so its paragraphs are checked side by side. */
+export const SPEED_SPLIT_WORDS = 120;
+
+/**
+ * Splits each shard into up to MAX_CONCURRENT_CALLS runs of whole paragraphs with about equal words. The deep pass
+ * spends most of its time writing, so three calls over a third of the text each answer about three times sooner;
+ * the shared system prompt is cached, so the extra calls cost little.
+ */
+export function splitForSpeed(shards: readonly Paragraph[][], minWords = SPEED_SPLIT_WORDS, parts = MAX_CONCURRENT_CALLS): Paragraph[][] {
+  const out: Paragraph[][] = [];
+  for (const shard of shards) {
+    const words = shard.map((p) => countWords(p.text));
+    const total = words.reduce((a, b) => a + b, 0);
+    const n = Math.min(parts, shard.filter((_, i) => words[i]! > 0).length);
+    if (total < minWords || n < 2) {
+      out.push([...shard]);
+      continue;
+    }
+    const target = total / n;
+    let current: Paragraph[] = [];
+    let acc = 0;
+    let made = 0;
+    shard.forEach((p, i) => {
+      current.push(p);
+      acc += words[i]!;
+      if (acc >= target * (made + 1) && made < n - 1 && i < shard.length - 1) {
+        out.push(current);
+        current = [];
+        made++;
+      }
+    });
+    if (current.length > 0) out.push(current);
+  }
   return out;
 }
 
@@ -704,7 +742,7 @@ export function createEngine(deps: EngineDeps): Engine {
             }
           };
 
-          const shards = shardBlocks(needed);
+          const shards = request.pass === 'deep' ? splitForSpeed(shardBlocks(needed), deps.speedSplitWords ?? SPEED_SPLIT_WORDS, deps.maxConcurrent ?? MAX_CONCURRENT_CALLS) : shardBlocks(needed);
           let outcomes: ShardOutcome[];
           try {
             outcomes = await Promise.all(shards.map((sh) => callShard(sh, true)));
