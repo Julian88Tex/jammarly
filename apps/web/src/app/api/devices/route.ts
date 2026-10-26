@@ -2,15 +2,15 @@ import type { DevicesListResponse } from '@jammarly/shared/api';
 import { preflight } from '@/lib/cors';
 import { listDevices } from '@/lib/devices';
 import { jsonResponse, route } from '@/lib/http';
-import { requireOwner } from '@/lib/session';
+import { requireUser } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** GET -> DevicesListResponse (owner). */
-export const GET = route('owner', async (req) => {
-  await requireOwner(req);
-  const devices = await listDevices();
+/** GET -> DevicesListResponse (the signed-in user's devices). */
+export const GET = route('session', async (req) => {
+  const { uid } = await requireUser(req);
+  const devices = await listDevices(uid);
   const body: DevicesListResponse = { devices };
   return jsonResponse(req, body);
 });

@@ -7,10 +7,10 @@ import { getProfileVersion } from '@/lib/store';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** GET (device or owner) -> ProfileVersionResponse, served from a 60 s module cache when possible. */
+/** GET (device or signed-in user) -> ProfileVersionResponse, served from a 60 s module cache when possible. */
 export const GET = route('shared', async (req) => {
-  await requireSessionOrDevice(req);
-  const body: ProfileVersionResponse = await getProfileVersion();
+  const { uid } = await requireSessionOrDevice(req);
+  const body: ProfileVersionResponse = await getProfileVersion(uid);
   return jsonResponse(req, body, { headers: { 'Cache-Control': 'private, max-age=60' } });
 });
 

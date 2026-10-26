@@ -2,6 +2,7 @@ import { DevicesPanel } from '@/components/overview/DevicesPanel';
 import { Card, Meter, PageHeader, Stat } from '@/components/ui';
 import { listDevices } from '@/lib/devices';
 import { getEnv } from '@/lib/env';
+import { requirePageUser } from '@/lib/session';
 import { getQuotaStatus, loadProfile } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +14,9 @@ function fmt(iso: string): string {
 
 export default async function OverviewPage() {
   const env = getEnv();
-  const [{ profile, version }, devices, quota] = await Promise.all([loadProfile(), listDevices(), getQuotaStatus()]);
+  const { uid } = await requirePageUser();
+  const [{ profile, version }, devices] = await Promise.all([loadProfile(uid), listDevices(uid)]);
+  const quota = await getQuotaStatus(devices.map((d) => d.id));
   const advRatio = quota.advancedOps / quota.limits.advancedOps;
   const simpleRatio = quota.simpleOps / quota.limits.simpleOps;
   const warn = advRatio >= 0.8 || simpleRatio >= 0.8;
@@ -34,7 +37,7 @@ export default async function OverviewPage() {
           </div>
         </Card>
 
-        <Card title="Usage" description={`Vercel Blob operations in ${quota.month} (Hobby plan budget).`}>
+        <Card title="Usage" description={`Vercel Blob operations in ${quota.month} for the whole deployment, every user included (Hobby plan budget).`}>
           <div className="space-y-3">
             <div>
               <div className="mb-1 flex justify-between text-[12.5px]">

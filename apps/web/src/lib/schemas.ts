@@ -8,8 +8,6 @@ export const EVENTS_PER_BATCH = 500;
 export const SNIPPET_MAX = 200;
 export const SENTENCE_MAX = 280;
 
-export const LoginSchema = z.object({ password: z.string().min(1).max(1024) });
-
 export const ServerKeySchema = z.object({ apiKey: z.string().min(20).max(256) });
 
 /** Ops are validated individually (allowlist, clock skew, value schemas) by validateOps in ./store. */

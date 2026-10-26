@@ -51,15 +51,15 @@ describe('MemoryBlobStore CAS semantics', () => {
 
   it('lists by prefix and deletes one or many paths', async () => {
     const store = new MemoryBlobStore(() => 1_700_000_000_000);
-    await store.putJson('users/owner/events/2026-01-01/d1.jsonl', []);
-    await store.putJson('users/owner/events/2026-01-02/d1.jsonl', []);
-    await store.putJson('users/owner/samples/2026-01-01/d1.jsonl', []);
-    const events = await store.list('users/owner/events/');
-    expect(events.map((e) => e.path)).toEqual(['users/owner/events/2026-01-01/d1.jsonl', 'users/owner/events/2026-01-02/d1.jsonl']);
+    await store.putJson('users/u1/events/2026-01-01/d1.jsonl', []);
+    await store.putJson('users/u1/events/2026-01-02/d1.jsonl', []);
+    await store.putJson('users/u1/samples/2026-01-01/d1.jsonl', []);
+    const events = await store.list('users/u1/events/');
+    expect(events.map((e) => e.path)).toEqual(['users/u1/events/2026-01-01/d1.jsonl', 'users/u1/events/2026-01-02/d1.jsonl']);
     expect(events[0]?.uploadedAt).toBe('2023-11-14T22:13:20.000Z');
-    await store.del(['users/owner/events/2026-01-01/d1.jsonl', 'users/owner/events/2026-01-02/d1.jsonl']);
-    expect(await store.list('users/owner/events/')).toEqual([]);
-    expect(store.has('users/owner/samples/2026-01-01/d1.jsonl')).toBe(true);
+    await store.del(['users/u1/events/2026-01-01/d1.jsonl', 'users/u1/events/2026-01-02/d1.jsonl']);
+    expect(await store.list('users/u1/events/')).toEqual([]);
+    expect(store.has('users/u1/samples/2026-01-01/d1.jsonl')).toBe(true);
   });
 
   it('normalizes etags for comparison', () => {

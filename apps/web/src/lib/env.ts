@@ -5,12 +5,14 @@
  */
 import { z } from 'zod';
 
-export const PASSWORD_HASH_RE = /^scrypt\$N=\d+,r=\d+,p=\d+\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$/;
 export const EXTENSION_ID_RE = /^[a-p]{32}$/;
 
 const EnvSchema = z.object({
   SESSION_SECRET: z.string().min(32, 'must be at least 32 characters'),
-  OWNER_PASSWORD_HASH: z.string().regex(PASSWORD_HASH_RE, 'expected "scrypt$N=16384,r=8,p=1$<salt>$<hash>" (see scripts/hash-password.mjs)'),
+  JSLICE_URL: z
+    .string()
+    .url('expected the JSlice origin, e.g. https://jslice.vercel.app')
+    .transform((s) => new URL(s).origin),
   CRON_SECRET: z.string().min(16, 'must be at least 16 characters'),
   APP_ORIGIN: z
     .string()
@@ -44,7 +46,7 @@ export function getEnv(): Env {
   if (cached !== null) return cached;
   const raw: Record<string, string | undefined> = {
     SESSION_SECRET: process.env.SESSION_SECRET,
-    OWNER_PASSWORD_HASH: process.env.OWNER_PASSWORD_HASH,
+    JSLICE_URL: process.env.JSLICE_URL,
     CRON_SECRET: process.env.CRON_SECRET,
     APP_ORIGIN: process.env.APP_ORIGIN,
     EXTENSION_IDS: process.env.EXTENSION_IDS,

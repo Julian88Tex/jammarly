@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import path from 'node:path';
+import { generateKeyPair } from 'jose';
 import type { ApiError } from '@jammarly/shared/api';
-import { POST as LOGIN } from '@/app/api/auth/login/route';
 import { POST as LOGOUT } from '@/app/api/auth/logout/route';
 import { GET as LIST_DEVICES, OPTIONS as DEVICES_OPTIONS } from '@/app/api/devices/route';
 import { GET as GET_PROFILE, OPTIONS as PROFILE_OPTIONS } from '@/app/api/profile/route';
@@ -10,8 +8,10 @@ import { POST as POST_EVENTS } from '@/app/api/events/route';
 import { GET as HEALTH } from '@/app/api/health/route';
 import { GET as CRON } from '@/app/api/cron/synthesize/route';
 import { corsHeadersFor, parseExtensionOrigin } from '@/lib/cors';
-import { hashPassword, verifyPassword } from '@/lib/crypto';
-import { APP_ORIGIN, EXT_ORIGIN, OTHER_EXT_ID, TEST_CRON_SECRET, TEST_PASSWORD, cookieFromResponse, deviceHeaders, freshStore, json, loginCookie, ownerHeaders, pairDevice, params, req, setupEnv } from './helpers';
+import { jsliceSignInUrl, jsliceSilentUrl, safeNext } from '@/lib/jslice';
+import { getRequestSession } from '@/lib/session';
+import { GLOBAL_PATHS } from '@/lib/store';
+import { APP_ORIGIN, EXT_ORIGIN, OTHER_EXT_ID, P, TEST_CRON_SECRET, TEST_UID, cookieFromResponse, deviceHeaders, freshStore, json, jsliceCallback, jsliceToken, loginCookie, ownerHeaders, pairDevice, params, req, setupEnv } from './helpers';
 
 beforeEach(() => {
   freshStore();
@@ -42,7 +42,7 @@ describe('CORS matrix', () => {
     expect(browser.status).toBe(403);
   });
 
-  it('owner routes reject any extension origin with 403 and cross-site browser origins', async () => {
+  it('session routes reject any extension origin with 403 and cross-site browser origins', async () => {
     const cookie = await loginCookie();
     const fromExtension = await LIST_DEVICES(req('/api/devices', { headers: { cookie, origin: EXT_ORIGIN } }), params({}));
     expect(fromExtension.status).toBe(403);
@@ -77,29 +77,12 @@ describe('CORS matrix', () => {
   });
 });
 
-describe('POST /api/auth/login', () => {
-  it('rejects a wrong password with 401 and sets no cookie', async () => {
-    const res = await LOGIN(req('/api/auth/login', { body: { password: 'nope' }, headers: { origin: APP_ORIGIN, 'x-forwarded-for': '198.51.100.7' } }), params({}));
-    expect(res.status).toBe(401);
-    expect((await json<ApiError>(res)).error.code).toBe('unauthorized');
-    expect(res.headers.getSetCookie()).toEqual([]);
-  });
-
-  it('locks an IP for 60 s after 5 failures, independently of other IPs', async () => {
-    for (let i = 0; i < 5; i += 1) {
-      const r = await LOGIN(req('/api/auth/login', { body: { password: `bad${i}` }, headers: { origin: APP_ORIGIN, 'x-forwarded-for': '198.51.100.9' } }), params({}));
-      expect(r.status).toBe(401);
-    }
-    const locked = await LOGIN(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: APP_ORIGIN, 'x-forwarded-for': '198.51.100.9' } }), params({}));
-    expect(locked.status).toBe(429);
-    expect((await json<ApiError>(locked)).error.code).toBe('rate_limited');
-    const otherIp = await LOGIN(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: APP_ORIGIN, 'x-forwarded-for': '198.51.100.10' } }), params({}));
-    expect(otherIp.status).toBe(200);
-  });
-
-  it('sets an httpOnly lax session cookie on success and clears it on logout', async () => {
-    const res = await LOGIN(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: APP_ORIGIN } }), params({}));
-    expect(res.status).toBe(200);
+describe('JSlice sign-in (GET /api/auth/jslice)', () => {
+  it('starts a session for the token sub, records the account and redirects to next', async () => {
+    const store = freshStore();
+    const res = await jsliceCallback(await jsliceToken({ sub: TEST_UID, email: 'writer@example.com' }), '/tuning');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`${APP_ORIGIN}/tuning`);
     const setCookie = res.headers.getSetCookie()[0] ?? '';
     expect(setCookie).toMatch(/^jammarly_session=/);
     expect(setCookie.toLowerCase()).toContain('httponly');
@@ -107,42 +90,103 @@ describe('POST /api/auth/login', () => {
     expect(setCookie.toLowerCase()).toContain('path=/');
     const cookie = cookieFromResponse(res);
     expect((await LIST_DEVICES(req('/api/devices', { headers: { cookie } }), params({}))).status).toBe(200);
+    expect(JSON.parse(store.raw(P.account) ?? '{}')).toMatchObject({ sub: TEST_UID, email: 'writer@example.com', name: 'Test Writer' });
+    expect(store.has(GLOBAL_PATHS.user(TEST_UID))).toBe(true);
+  });
+
+  it('accepts a token once: a replay redirects to the login page with an error', async () => {
+    const token = await jsliceToken();
+    expect((await jsliceCallback(token)).headers.get('location')).toBe(`${APP_ORIGIN}/overview`);
+    const replay = await jsliceCallback(token);
+    expect(replay.status).toBe(302);
+    expect(replay.headers.get('location')).toBe(`${APP_ORIGIN}/login?error=jslice&next=%2Foverview`);
+    expect(replay.headers.getSetCookie()).toEqual([]);
+  });
+
+  it('answers a call without a token with an error= redirect (JSlice probes for it)', async () => {
+    const res = await jsliceCallback(null);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location') ?? '').toContain('error=');
+  });
+
+  it('rejects a wrong audience, a wrong issuer, an expired token, a foreign key and an unusable sub', async () => {
+    const { privateKey } = await generateKeyPair('ES256');
+    const old = Math.floor(Date.now() / 1000) - 600;
+    const bad = [
+      await jsliceToken({ audience: 'jalto' }),
+      await jsliceToken({ issuer: 'https://evil.example' }),
+      await jsliceToken({ iat: old, expiresInSeconds: 60 }),
+      await jsliceToken({ privateKey }),
+      await jsliceToken({ sub: '../owner' }),
+      'not-a-jwt',
+    ];
+    for (const token of bad) {
+      const res = await jsliceCallback(token);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('/login?error=jslice');
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+  });
+
+  it('forwards next only when it starts with a single slash', async () => {
+    for (const [next, expected] of [
+      ['/voice', '/voice'],
+      ['/privacy?tab=1', '/privacy?tab=1'],
+      ['//evil.example/x', '/overview'],
+      ['https://evil.example', '/overview'],
+      ['/\\evil.example', '/overview'],
+    ] as const) {
+      const res = await jsliceCallback(await jsliceToken(), next);
+      expect(res.headers.get('location')).toBe(`${APP_ORIGIN}${expected}`);
+    }
+    expect(safeNext(null)).toBe('/overview');
+  });
+
+  it('builds the interactive and silent JSlice URLs', () => {
+    expect(jsliceSignInUrl('/tuning')).toBe('https://jslice.vercel.app/?app=jammerly&next=%2Ftuning');
+    expect(jsliceSilentUrl('/overview')).toBe('https://jslice.vercel.app/launch/jammerly?silent=1&next=%2Foverview');
+    expect(jsliceSilentUrl('//evil.example')).toBe('https://jslice.vercel.app/launch/jammerly?silent=1&next=%2Foverview');
+  });
+
+  it('logout clears the cookie and points at /login?jslice=none', async () => {
+    const cookie = await loginCookie();
     const out = await LOGOUT(req('/api/auth/logout', { method: 'POST', headers: ownerHeaders(cookie) }), params({}));
     expect(out.status).toBe(200);
+    expect(await json<{ redirect: string }>(out)).toMatchObject({ ok: true, redirect: '/login?jslice=none' });
     expect(out.headers.getSetCookie()[0] ?? '').toMatch(/jammarly_session=;|max-age=0/i);
   });
 
-  it('rejects logins from an extension origin and malformed bodies', async () => {
-    const ext = await LOGIN(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: EXT_ORIGIN } }), params({}));
-    expect(ext.status).toBe(403);
-    const bad = await LOGIN(req('/api/auth/login', { body: { nope: 1 }, headers: { origin: APP_ORIGIN } }), params({}));
-    expect(bad.status).toBe(400);
-  });
-
-  it('accepts the hash format printed by scripts/hash-password.mjs', async () => {
-    const script = path.resolve(__dirname, '../scripts/hash-password.mjs');
-    const out = execFileSync(process.execPath, [script, 'pw-from-script'], { encoding: 'utf8' }).trim();
-    expect(out).toMatch(/^scrypt\$N=16384,r=8,p=1\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]{43}$/);
-    expect(verifyPassword('pw-from-script', out)).toBe(true);
-    expect(verifyPassword('other', out)).toBe(false);
-    const viaStdin = execFileSync(process.execPath, [script], { encoding: 'utf8', input: 'from stdin\n' }).trim();
-    expect(verifyPassword('from stdin', viaStdin)).toBe(true);
-    expect(verifyPassword('pw', 'not-a-hash')).toBe(false);
-    expect(hashPassword('a')).not.toBe(hashPassword('a'));
-
-    setupEnv({ OWNER_PASSWORD_HASH: out });
-    const res = await LOGIN(req('/api/auth/login', { body: { password: 'pw-from-script' }, headers: { origin: APP_ORIGIN } }), params({}));
-    expect(res.status).toBe(200);
+  it('a garbage cookie or a sealed cookie from the old owner login is not a session', async () => {
+    expect((await LIST_DEVICES(req('/api/devices', { headers: { cookie: 'jammarly_session=garbage', origin: APP_ORIGIN } }), params({}))).status).toBe(401);
+    const headers = new Headers();
+    const legacy = await getRequestSession(req('/'), headers);
+    Object.assign(legacy, { uid: 'owner', iat: Date.now() });
+    await legacy.save();
+    const cookie = (headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    expect(cookie).toMatch(/^jammarly_session=/);
+    expect((await LIST_DEVICES(req('/api/devices', { headers: { cookie, origin: APP_ORIGIN } }), params({}))).status).toBe(401);
+    // The same cookie with the JSlice marker and a real sub is a session (so the 401 above is about the marker).
+    const ok = new Headers();
+    const current = await getRequestSession(req('/'), ok);
+    Object.assign(current, { uid: TEST_UID, via: 'jslice', iat: Date.now() });
+    await current.save();
+    const okCookie = (ok.get('set-cookie') ?? '').split(';')[0] ?? '';
+    expect((await LIST_DEVICES(req('/api/devices', { headers: { cookie: okCookie, origin: APP_ORIGIN } }), params({}))).status).toBe(200);
   });
 
   it('fails fast with a clear message when the environment is incomplete', async () => {
-    setupEnv({ SESSION_SECRET: 'short' });
-    const res = await LOGIN(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: APP_ORIGIN } }), params({}));
+    setupEnv({ JSLICE_URL: undefined });
+    const res = await jsliceCallback(await jsliceToken());
     expect(res.status).toBe(500);
     const body = await json<ApiError>(res);
     expect(body.error.code).toBe('internal');
-    expect(body.error.message).toContain('SESSION_SECRET');
-    expect(body.error.message).not.toContain('short');
+    expect(body.error.message).toContain('JSLICE_URL');
+    setupEnv({ SESSION_SECRET: 'short' });
+    const short = await jsliceCallback(await jsliceToken());
+    expect(short.status).toBe(500);
+    const shortBody = await json<ApiError>(short);
+    expect(shortBody.error.message).toContain('SESSION_SECRET');
+    expect(shortBody.error.message).not.toContain('short');
   });
 });
 
@@ -152,12 +196,13 @@ describe('cron and health', () => {
     expect((await CRON(req('/api/cron/synthesize?ctx=messages', { headers: { authorization: 'Bearer wrong-secret-0123456789' } }), params({}))).status).toBe(401);
     const bad = await CRON(req('/api/cron/synthesize?ctx=code', { headers: { authorization: `Bearer ${TEST_CRON_SECRET}` } }), params({}));
     expect(bad.status).toBe(400);
+    await loginCookie();
     const ok = await CRON(req('/api/cron/synthesize?ctx=messages', { headers: { authorization: `Bearer ${TEST_CRON_SECRET}` } }), params({}));
     expect(ok.status).toBe(200);
-    expect(await json<{ stage: string }>(ok)).toMatchObject({ stage: 'done', context: 'messages' });
+    expect(await json<{ context: string; users: number }>(ok)).toMatchObject({ context: 'messages', users: 1, ran: 0, skipped: 1, deferred: 0 });
   });
 
-  it('health is public and adds Blob counters for the owner', async () => {
+  it('health is public and adds Blob counters for a signed-in user', async () => {
     const anon = await json<{ ok: boolean; version: string; blob?: unknown }>(await HEALTH(req('/api/health'), params({})));
     expect(anon.ok).toBe(true);
     expect(anon.blob).toBeUndefined();

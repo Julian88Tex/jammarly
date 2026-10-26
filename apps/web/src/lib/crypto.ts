@@ -1,10 +1,8 @@
 /**
- * Small crypto helpers on node:crypto: password hashing in the OWNER_PASSWORD_HASH format, constant-time
- * comparisons, random ids and tokens, SHA-256, and AES-256-GCM under a key derived from SESSION_SECRET.
+ * Small crypto helpers on node:crypto: constant-time comparisons, random ids and tokens, SHA-256, and
+ * AES-256-GCM under a key derived from SESSION_SECRET.
  */
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
-
-export const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, keyLen: 32 } as const;
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 export function b64url(buf: Uint8Array): string {
   return Buffer.from(buf).toString('base64url');
@@ -28,34 +26,6 @@ export function safeEqual(a: string, b: string): boolean {
     return false;
   }
   return timingSafeEqual(ba, bb);
-}
-
-/** "scrypt$N=16384,r=8,p=1$<base64url salt>$<base64url 32-byte hash>" (same format as scripts/hash-password.mjs). */
-export function hashPassword(password: string, salt: Buffer = randomBytes(16)): string {
-  const { N, r, p, keyLen } = SCRYPT_PARAMS;
-  const hash = scryptSync(password, salt, keyLen, { N, r, p });
-  return `scrypt$N=${N},r=${r},p=${p}$${b64url(salt)}$${b64url(hash)}`;
-}
-
-/** Verify a password against the stored hash; never throws on malformed input (returns false). */
-export function verifyPassword(password: string, stored: string): boolean {
-  const m = /^scrypt\$N=(\d+),r=(\d+),p=(\d+)\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$/.exec(stored);
-  if (m === null) return false;
-  const [, nStr, rStr, pStr, saltStr, hashStr] = m;
-  if (nStr === undefined || rStr === undefined || pStr === undefined || saltStr === undefined || hashStr === undefined) return false;
-  const N = Number(nStr);
-  const r = Number(rStr);
-  const p = Number(pStr);
-  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || N > 1 << 20 || r < 1 || r > 32 || p < 1 || p > 16) return false;
-  const salt = fromB64url(saltStr);
-  const expected = fromB64url(hashStr);
-  if (salt.length < 8 || expected.length < 16) return false;
-  try {
-    const actual = scryptSync(password, salt, expected.length, { N, r, p, maxmem: 256 * 1024 * 1024 });
-    return timingSafeEqual(actual, expected);
-  } catch {
-    return false;
-  }
 }
 
 export function randomHex(bytes: number): string {

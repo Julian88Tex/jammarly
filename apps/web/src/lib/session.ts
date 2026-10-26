@@ -1,22 +1,37 @@
 /**
- * Owner session: an iron-session v9 sealed cookie named `jammarly_session` (httpOnly, sameSite lax, secure in
- * production, 30 days). Route handlers read and write it through the Web `Request` / `Headers` adapter so they
- * can be unit-tested with plain Request objects; server components read it through `cookies()`.
+ * User session: an iron-session v9 sealed cookie named `jammarly_session` (httpOnly, sameSite lax, secure in
+ * production, 30 days). `uid` is the JSlice `sub` (the user's stable Google subject id); every per-user
+ * document lives under `users/<uid>/`. Route handlers read and write the cookie through the Web `Request` /
+ * `Headers` adapter so they can be unit-tested with plain Request objects; server components read it through
+ * `cookies()`.
  */
 import { getIronSession, webCookies, type IronSession, type SessionOptions } from 'iron-session';
 import { getEnv } from './env';
 import { ApiRouteError } from './errors';
+import { isUserId } from './store';
 
 export const SESSION_COOKIE = 'jammarly_session';
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 export interface SessionData {
-  uid: 'owner';
+  /** The JSlice `sub`. */
+  uid: string;
+  /** How the session started; only JSlice sessions count (an old single-owner cookie has no `via`). */
+  via: 'jslice';
   /** Issued-at, epoch milliseconds (iron-session v9 stores plain JSON). */
   iat: number;
+  email?: string;
+  name?: string;
 }
 
-export type OwnerSession = IronSession<SessionData>;
+export type UserSession = IronSession<SessionData>;
+
+/** The signed-in user as route handlers and pages see it. */
+export interface SignedInUser {
+  uid: string;
+  email: string;
+  name: string;
+}
 
 export function sessionOptions(): SessionOptions {
   const env = getEnv();
@@ -34,38 +49,50 @@ export function sessionOptions(): SessionOptions {
 }
 
 /** Session bound to a route-handler request; `save()`/`destroy()` write Set-Cookie into `responseHeaders`. */
-export function getRequestSession(req: Request, responseHeaders: Headers): Promise<OwnerSession> {
+export function getRequestSession(req: Request, responseHeaders: Headers): Promise<UserSession> {
   return getIronSession<SessionData>(webCookies(req, responseHeaders), sessionOptions());
 }
 
-export function isOwner(session: Partial<SessionData>): boolean {
-  return session.uid === 'owner' && typeof session.iat === 'number';
+export function isSignedIn(session: Partial<SessionData>): session is SessionData {
+  return session.via === 'jslice' && isUserId(session.uid) && typeof session.iat === 'number';
 }
 
-/** Throw 401 unless the request carries a valid owner session. */
-export async function requireOwner(req: Request): Promise<OwnerSession> {
+function toUser(session: SessionData): SignedInUser {
+  return { uid: session.uid, email: session.email ?? '', name: session.name ?? '' };
+}
+
+/** Throw 401 unless the request carries a valid session; returns the user. */
+export async function requireUser(req: Request): Promise<SignedInUser> {
   const session = await getRequestSession(req, new Headers());
-  if (!isOwner(session)) throw new ApiRouteError(401, 'unauthorized', 'Sign in to the dashboard first.');
-  return session;
+  if (!isSignedIn(session)) throw new ApiRouteError(401, 'unauthorized', 'Sign in to the dashboard first.');
+  return toUser(session);
 }
 
-/** True when the request carries a valid owner session (no throw). */
-export async function hasOwnerSession(req: Request): Promise<boolean> {
+/** The signed-in user, or null (no throw). */
+export async function optionalUser(req: Request): Promise<SignedInUser | null> {
   try {
     const session = await getRequestSession(req, new Headers());
-    return isOwner(session);
+    return isSignedIn(session) ? toUser(session) : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
- * Session for server components and layouts (reads the incoming cookies through next/headers). Imported
- * lazily so this module stays usable in plain Node tests.
+ * The signed-in user for server components and layouts (reads the incoming cookies through next/headers), or
+ * null. Imported lazily so this module stays usable in plain Node tests.
  */
-export async function getPageSession(): Promise<Partial<SessionData>> {
+export async function getPageUser(): Promise<SignedInUser | null> {
   const { cookies } = await import('next/headers');
   const store = await cookies();
   const session = await getIronSession<SessionData>(store, sessionOptions());
-  return { ...(session.uid !== undefined ? { uid: session.uid } : {}), ...(session.iat !== undefined ? { iat: session.iat } : {}) };
+  return isSignedIn(session) ? toUser(session) : null;
+}
+
+/** Like {@link getPageUser} but redirects to the login page when nobody is signed in. */
+export async function requirePageUser(): Promise<SignedInUser> {
+  const user = await getPageUser();
+  if (user !== null) return user;
+  const { redirect } = await import('next/navigation');
+  return redirect('/login');
 }

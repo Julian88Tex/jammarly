@@ -3,14 +3,14 @@
  *
  * - Requests whose `Origin` is `chrome-extension://<id>` with `id ∈ EXTENSION_IDS` get the allow headers echoed
  *   back (with `Vary: Origin`), never credentials. Any other origin gets nothing.
- * - Cookie-authenticated (owner) routes reject requests that carry any extension Origin, and any cross-site
+ * - Cookie-authenticated (session) routes reject requests that carry any extension Origin, and any cross-site
  *   browser Origin, with 403.
  * - Device routes reject browser origins that are not an allowed extension with 403.
  */
 import { getEnv } from './env';
 import { ApiRouteError } from './errors';
 
-export type OriginPolicy = 'owner' | 'device' | 'shared' | 'public';
+export type OriginPolicy = 'session' | 'device' | 'shared' | 'public';
 
 export const CORS_METHODS = 'GET,POST,PUT,DELETE,OPTIONS';
 export const CORS_HEADERS = 'Authorization, Content-Type, If-Match, If-None-Match';
@@ -88,7 +88,7 @@ export function enforceOriginPolicy(req: Request, policy: OriginPolicy): void {
   const origin = req.headers.get('origin');
   if (policy === 'public' || origin === null || origin.length === 0 || origin === 'null') return;
   const extension = isAnyExtensionOrigin(origin);
-  if (policy === 'owner') {
+  if (policy === 'session') {
     if (extension) throw new ApiRouteError(403, 'unauthorized', 'This route cannot be called from an extension origin.');
     if (!isSelfOrigin(req, origin)) throw new ApiRouteError(403, 'unauthorized', 'Cross-site requests are not allowed on this route.');
     return;

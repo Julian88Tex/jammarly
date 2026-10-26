@@ -58,7 +58,7 @@ Every change merges into `main`. Each push to `main` that passes typecheck and t
 
 ```
 apps/extension   Chrome MV3 extension (TypeScript, esbuild, vitest + jsdom, Playwright e2e in headless Chromium)
-apps/web         Next.js 16 companion app on Vercel (owner login, device pairing, profile sync, learning, dashboard)
+apps/web         Next.js 16 companion app on Vercel (JSlice sign-in, device pairing, profile sync, learning, dashboard)
 packages/shared  @jammarly/shared: contracts, text utilities, local rules, prompts and anchoring, learner, CRDT merge
 docs             ARCHITECTURE.md is the design source of truth
 ```
@@ -91,13 +91,13 @@ devices and a nightly voice-profile job. Full instructions, the environment vari
 
 1. Create a Vercel project from this repository with **Root Directory** `apps/web` (Fluid Compute, region `iad1`).
 2. Create one **private** Blob store and connect it to the project.
-3. Set the environment variables: `SESSION_SECRET` (random, 32+ chars), `OWNER_PASSWORD_HASH` (run
-   `node apps/web/scripts/hash-password.mjs` and paste the output), `CRON_SECRET`, `APP_ORIGIN` (the production
-   alias, e.g. `https://jammarly-web.vercel.app`), `EXTENSION_IDS` (the id from `apps/extension/EXTENSION_ID`) and
+3. Set the environment variables: `SESSION_SECRET` (random, 32+ chars), `CRON_SECRET`, `JSLICE_URL`
+   (`https://jslice.vercel.app`; sign-in is Google single sign-on through JSlice, for any number of users),
+   `APP_ORIGIN` (the production alias, e.g. `https://jammarly-web.vercel.app`), `EXTENSION_IDS` (the id from `apps/extension/EXTENSION_ID`) and
    optionally `ANTHROPIC_API_KEY` for the server-side learning job (it can also be entered on the dashboard).
 4. Deploy. Then rebuild the extension with `JAMMARLY_APP_ORIGIN=https://<your alias> npm run build` so the build can
    accept pairing messages from your dashboard, and reload it.
-5. In the dashboard open **Overview** and click **Pair a device**; the extension picks up the code automatically, or
+5. Sign in with **Continue with JSlice**, open **Overview** and click **Pair a device**; the extension picks up the code automatically, or
    you type it into the extension's options page under **Sync**.
 
 ## Development

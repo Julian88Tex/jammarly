@@ -19,13 +19,13 @@ function stripSnippets(e: FeedbackEvent): FeedbackEvent {
 }
 
 /**
- * POST EventsUploadRequest (device) -> EventsUploadResponse. Privacy is enforced here regardless of what the
+ * POST EventsUploadRequest (device; stored under the device's user) -> EventsUploadResponse. Privacy is enforced here regardless of what the
  * device sent: with storeSnippets off, snippets are stripped and samples dropped. 429 beyond 6 batches/day.
  */
 export const POST = route('device', async (req) => {
-  const device = await requireDevice(req);
+  const { uid, device } = await requireDevice(req);
   const body = await readJson(req, EventsUploadSchema);
-  const { profile } = await loadProfile();
+  const { profile } = await loadProfile(uid);
   const privacy = profile.settings.privacy.value;
   const keepSnippets = privacy.storeSnippets;
   const events = body.events.map((e) => {
@@ -38,8 +38,8 @@ export const POST = route('device', async (req) => {
     return jsonResponse(req, empty);
   }
   await bumpDeviceQuota(device.id, 'eventBatches');
-  if (events.length > 0) await appendBatch('events', device.id, events);
-  if (samples.length > 0) await appendBatch('samples', device.id, samples);
+  if (events.length > 0) await appendBatch(uid, 'events', device.id, events);
+  if (samples.length > 0) await appendBatch(uid, 'samples', device.id, samples);
   const res: EventsUploadResponse = { accepted: events.length, samplesAccepted: samples.length };
   return jsonResponse(req, res);
 });

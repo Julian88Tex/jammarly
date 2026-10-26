@@ -1,12 +1,16 @@
 /**
- * Paired devices (`users/owner/devices.json`): metadata plus the SHA-256 of each bearer secret. Tokens are
+ * Paired devices (`users/<uid>/devices.json`): metadata plus the SHA-256 of each bearer secret. Tokens are
  * `jm1.<deviceId>.<secret>`; only the hash is stored. Rotation keeps the previous hash valid for 5 minutes.
+ *
+ * Device ids are random and global, so a token names its device but not its user: `auth/devices/<deviceId>.json`
+ * holds `{ uid }` and is written once when the device is created. The mapping never changes, so it is also
+ * cached in memory.
  */
 import type { DeviceInfo, RotateResponse } from '@jammarly/shared/api';
 import { PreconditionFailed, isNotModified } from './blob';
 import { newDeviceId, newSecret, safeEqual, sha256Hex } from './crypto';
 import { ApiRouteError } from './errors';
-import { PATHS, blob } from './store';
+import { GLOBAL_PATHS, blob, isUserId, userPaths } from './store';
 
 export interface StoredDevice extends DeviceInfo {
   tokenHash: string;
@@ -40,21 +44,21 @@ export function publicDevice(d: StoredDevice): DeviceInfo {
   return { id: d.id, name: d.name, platform: d.platform, extVersion: d.extVersion, createdAt: d.createdAt, lastSeenAt: d.lastSeenAt };
 }
 
-export async function loadDevices(): Promise<{ doc: DevicesDoc; etag: string | null }> {
-  const res = await blob().getJson<DevicesDoc>(PATHS.devices);
+export async function loadDevices(uid: string): Promise<{ doc: DevicesDoc; etag: string | null }> {
+  const res = await blob().getJson<DevicesDoc>(userPaths(uid).devices);
   if (res === null || isNotModified(res)) return { doc: { devices: [] }, etag: null };
   const devices = Array.isArray(res.value?.devices) ? res.value.devices : [];
   return { doc: { devices }, etag: res.etag };
 }
 
 /** Read-mutate-write with CAS (3 attempts). `mutate` edits the document in place. */
-export async function saveDevices(mutate: (doc: DevicesDoc) => void): Promise<DevicesDoc> {
+export async function saveDevices(uid: string, mutate: (doc: DevicesDoc) => void): Promise<DevicesDoc> {
   const store = blob();
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const { doc, etag } = await loadDevices();
+    const { doc, etag } = await loadDevices(uid);
     mutate(doc);
     try {
-      await store.putJson(PATHS.devices, doc, etag === null ? { allowOverwrite: false } : { ifMatch: etag });
+      await store.putJson(userPaths(uid).devices, doc, etag === null ? { allowOverwrite: false } : { ifMatch: etag });
       return doc;
     } catch (err) {
       if (err instanceof PreconditionFailed || (err instanceof Error && err.name === 'BlobAlreadyExists')) continue;
@@ -70,7 +74,29 @@ export interface NewDeviceInput {
   extVersion: string;
 }
 
-export async function createDevice(input: NewDeviceInput, nowMs: number = Date.now()): Promise<{ device: DeviceInfo; token: string }> {
+interface DeviceIndexDoc {
+  uid: string;
+  createdAt: string;
+}
+
+const deviceOwners = new Map<string, string>();
+
+export function resetDeviceIndexCacheForTests(): void {
+  deviceOwners.clear();
+}
+
+/** The user a device belongs to, or null for an unknown device id. */
+export async function deviceOwner(deviceId: string): Promise<string | null> {
+  const cached = deviceOwners.get(deviceId);
+  if (cached !== undefined) return cached;
+  const res = await blob().getJson<DeviceIndexDoc>(GLOBAL_PATHS.device(deviceId));
+  if (res === null || isNotModified(res) || !isUserId(res.value?.uid)) return null;
+  if (deviceOwners.size > 10_000) deviceOwners.clear();
+  deviceOwners.set(deviceId, res.value.uid);
+  return res.value.uid;
+}
+
+export async function createDevice(uid: string, input: NewDeviceInput, nowMs: number = Date.now()): Promise<{ device: DeviceInfo; token: string }> {
   const id = newDeviceId();
   const secret = newSecret();
   const nowIso = new Date(nowMs).toISOString();
@@ -83,21 +109,25 @@ export async function createDevice(input: NewDeviceInput, nowMs: number = Date.n
     lastSeenAt: nowIso,
     tokenHash: sha256Hex(secret),
   };
-  await saveDevices((doc) => {
+  // The index first: a device listed for a user always resolves back to that user.
+  const index: DeviceIndexDoc = { uid, createdAt: nowIso };
+  await blob().putJson(GLOBAL_PATHS.device(id), index, { allowOverwrite: false });
+  deviceOwners.set(id, uid);
+  await saveDevices(uid, (doc) => {
     doc.devices.push(stored);
   });
   return { device: publicDevice(stored), token: makeToken(id, secret) };
 }
 
-export async function listDevices(): Promise<DeviceInfo[]> {
-  const { doc } = await loadDevices();
+export async function listDevices(uid: string): Promise<DeviceInfo[]> {
+  const { doc } = await loadDevices(uid);
   return doc.devices.map(publicDevice);
 }
 
 /** Mark a device revoked (its token stops working immediately). Returns false when unknown. */
-export async function revokeDevice(id: string): Promise<boolean> {
+export async function revokeDevice(uid: string, id: string): Promise<boolean> {
   let found = false;
-  await saveDevices((doc) => {
+  await saveDevices(uid, (doc) => {
     const d = doc.devices.find((x) => x.id === id);
     if (d === undefined) return;
     found = true;
@@ -110,11 +140,11 @@ export async function revokeDevice(id: string): Promise<boolean> {
 }
 
 /** Issue a new secret; the old one stays valid for ROTATE_GRACE_MS. */
-export async function rotateDevice(id: string, nowMs: number = Date.now()): Promise<RotateResponse> {
+export async function rotateDevice(uid: string, id: string, nowMs: number = Date.now()): Promise<RotateResponse> {
   const secret = newSecret();
   const previousValidUntil = new Date(nowMs + ROTATE_GRACE_MS).toISOString();
   let found = false;
-  await saveDevices((doc) => {
+  await saveDevices(uid, (doc) => {
     const d = doc.devices.find((x) => x.id === id && x.revoked !== true);
     if (d === undefined) return;
     found = true;
@@ -126,35 +156,37 @@ export async function rotateDevice(id: string, nowMs: number = Date.now()): Prom
   return { token: makeToken(id, secret), previousValidUntil };
 }
 
-export type DeviceAuthResult = { status: 'ok'; device: StoredDevice } | { status: 'revoked' } | { status: 'unknown' };
+export type DeviceAuthResult = { status: 'ok'; uid: string; device: StoredDevice } | { status: 'revoked' } | { status: 'unknown' };
 
 export async function authenticateDeviceToken(token: string, nowMs: number = Date.now()): Promise<DeviceAuthResult> {
   const parsed = parseToken(token);
   if (parsed === null) return { status: 'unknown' };
-  const { doc } = await loadDevices();
+  const uid = await deviceOwner(parsed.deviceId);
+  if (uid === null) return { status: 'unknown' };
+  const { doc } = await loadDevices(uid);
   const device = doc.devices.find((d) => d.id === parsed.deviceId);
   if (device === undefined) return { status: 'unknown' };
   if (device.revoked === true) return { status: 'revoked' };
   const hash = sha256Hex(parsed.secret);
-  if (device.tokenHash.length > 0 && safeEqual(hash, device.tokenHash)) return { status: 'ok', device };
+  if (device.tokenHash.length > 0 && safeEqual(hash, device.tokenHash)) return { status: 'ok', uid, device };
   if (
     device.prevTokenHash !== undefined &&
     device.prevValidUntil !== undefined &&
     Date.parse(device.prevValidUntil) > nowMs &&
     safeEqual(hash, device.prevTokenHash)
   ) {
-    return { status: 'ok', device };
+    return { status: 'ok', uid, device };
   }
   return { status: 'unknown' };
 }
 
 /** Update lastSeenAt at most once per hour (a Blob write otherwise happens on every request). */
-export async function touchLastSeen(device: StoredDevice, nowMs: number = Date.now()): Promise<void> {
+export async function touchLastSeen(uid: string, device: StoredDevice, nowMs: number = Date.now()): Promise<void> {
   const last = Date.parse(device.lastSeenAt);
   if (Number.isFinite(last) && nowMs - last < LAST_SEEN_WRITE_INTERVAL_MS) return;
   const nowIso = new Date(nowMs).toISOString();
   try {
-    await saveDevices((doc) => {
+    await saveDevices(uid, (doc) => {
       const d = doc.devices.find((x) => x.id === device.id);
       if (d !== undefined) d.lastSeenAt = nowIso;
     });

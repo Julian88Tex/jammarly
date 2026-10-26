@@ -45,7 +45,7 @@ function ContextEditor({ ctx, initial, baseVersion, onSaved }: { ctx: VoiceConte
       next.generatedAt = new Date().toISOString();
       next.generatedBy = 'owner';
       next.removedByUser = [...new Set([...next.removedByUser, ...removed])].slice(0, 200);
-      next.changelog = 'Edited by the owner on the dashboard.';
+      next.changelog = 'Edited on the dashboard.';
       const res = await sendOps([ops.voice(ctx, next)], baseVersion);
       const stored = res.profile.voice.profiles[ctx];
       if (stored !== undefined) setProfile(stored);

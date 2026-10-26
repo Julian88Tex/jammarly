@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation';
-import { getPageSession, isOwner } from '@/lib/session';
+import { getPageUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  const session = await getPageSession();
-  redirect(isOwner(session) ? '/overview' : '/login');
+  const user = await getPageUser();
+  redirect(user !== null ? '/overview' : '/login');
 }
