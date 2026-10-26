@@ -143,9 +143,9 @@ describe('JSlice sign-in (GET /api/auth/jslice)', () => {
   });
 
   it('builds the interactive and silent JSlice URLs', () => {
-    expect(jsliceSignInUrl('/tuning')).toBe('https://jslice.vercel.app/?app=jammerly&next=%2Ftuning');
-    expect(jsliceSilentUrl('/overview')).toBe('https://jslice.vercel.app/launch/jammerly?silent=1&next=%2Foverview');
-    expect(jsliceSilentUrl('//evil.example')).toBe('https://jslice.vercel.app/launch/jammerly?silent=1&next=%2Foverview');
+    expect(jsliceSignInUrl('/tuning')).toBe('https://jslice.vercel.app/?app=jammarly&next=%2Ftuning');
+    expect(jsliceSilentUrl('/overview')).toBe('https://jslice.vercel.app/launch/jammarly?silent=1&next=%2Foverview');
+    expect(jsliceSilentUrl('//evil.example')).toBe('https://jslice.vercel.app/launch/jammarly?silent=1&next=%2Foverview');
   });
 
   it('logout clears the cookie and points at /login?jslice=none', async () => {

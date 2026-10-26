@@ -1,7 +1,7 @@
 /**
  * JSlice single sign-on (https://jslice.vercel.app, docs/INTEGRATION.md in the JSlice repo). JSlice signs the
  * user in with Google and sends them to `/api/auth/jslice?token=<jwt>&next=<path>` with a 60-second ES256 JWT:
- * `iss` = JSLICE_URL, `aud` = "jammerly", `sub` = the stable Google subject id, plus `email`, `name`,
+ * `iss` = JSLICE_URL, `aud` = "jammarly", `sub` = the stable Google subject id, plus `email`, `name`,
  * `picture` and a unique `jti`. The public keys are at `${JSLICE_URL}/.well-known/jwks.json`.
  *
  * Each token works once: its `jti` (hashed) is recorded at `auth/jti/<sha256>.json` with a create-only write,
@@ -13,7 +13,7 @@ import { sha256Hex } from './crypto';
 import { getEnv } from './env';
 import { GLOBAL_PATHS, blob, isUserId, userPaths } from './store';
 
-export const JSLICE_APP_ID = 'jammerly';
+export const JSLICE_APP_ID = 'jammarly';
 export const JSLICE_CALLBACK_PATH = '/api/auth/jslice';
 export const DEFAULT_NEXT = '/overview';
 /** Where sign-out lands: `jslice=none` keeps the login page from signing the user straight back in. */

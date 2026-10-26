@@ -326,9 +326,9 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
 * Next.js 16.4 App Router, Node 24, Fluid Compute, region `iad1`, `maxDuration` 60 for API routes and 300 for the
   learning routes [R07 §9.1].
 * **Auth:** many users through JSlice (Google single sign-on, `JSLICE_URL`). JSlice hands back a 60 s ES256 JWT
-  (`aud` = `jammerly`) at `/api/auth/jslice`; the route verifies it against JSlice's JWKS, accepts each `jti` once and
+  (`aud` = `jammarly`) at `/api/auth/jslice`; the route verifies it against JSlice's JWKS, accepts each `jti` once and
   starts an iron-session v9 sealed cookie whose `uid` is the token's `sub` (the stable Google id). `/login` first tries
-  a silent sign-in (`/launch/jammerly?silent=1`) and shows **Continue with JSlice** when JSlice answers
+  a silent sign-in (`/launch/jammarly?silent=1`) and shows **Continue with JSlice** when JSlice answers
   `jslice=none`; sign-out lands on `/login?jslice=none`. Device bearer tokens (`jm1.<deviceId>.<secret>`, stored
   hashed) resolve to their user through `auth/devices/<deviceId>.json`.
 * **Storage:** one private Vercel Blob store (OIDC). Every user's documents live under `users/<sub>/`:

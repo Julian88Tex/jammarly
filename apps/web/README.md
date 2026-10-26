@@ -38,15 +38,15 @@ Missing or malformed variables fail at request time with a `500 { error: { code:
 
 ### Signing in with JSlice
 
-There are no passwords. `/login` sends visitors to JSlice (`${JSLICE_URL}/?app=jammerly&next=<path>`), which signs
+There are no passwords. `/login` sends visitors to JSlice (`${JSLICE_URL}/?app=jammarly&next=<path>`), which signs
 them in with Google and comes back to `${APP_ORIGIN}/api/auth/jslice?token=<jwt>&next=<path>`. The token is an ES256
-JWT (`iss` = `JSLICE_URL`, `aud` = `jammerly`, `sub` = the stable Google id, plus `email`, `name`, `picture`, `jti`,
+JWT (`iss` = `JSLICE_URL`, `aud` = `jammarly`, `sub` = the stable Google id, plus `email`, `name`, `picture`, `jti`,
 60 s lifetime). The route verifies it with the JWKS, records the `jti` so the token works once, writes
 `users/<sub>/account.json`, starts the session with `uid = sub` and redirects to `next` (only a path that starts with a
 single `/`; anything else goes to `/overview`).
 
 A visit to `/login` without `?jslice=none` and without `?error` first tries a **silent** sign-in through
-`${JSLICE_URL}/launch/jammerly?silent=1&next=<path>`: a visitor already signed in to JSlice comes straight back with a
+`${JSLICE_URL}/launch/jammarly?silent=1&next=<path>`: a visitor already signed in to JSlice comes straight back with a
 token, anyone else comes back to `/login?jslice=none&next=<path>`, which shows the **Continue with JSlice** button.
 Signing out lands on `/login?jslice=none` so it does not sign the user straight back in.
 
@@ -180,7 +180,7 @@ left a stage records `partial` and the next invocation resumes. **Run now** on t
    night and `GET /api/health`.
 6. Build the extension with `JAMMARLY_APP_ORIGIN` set to the same alias and record its id in `EXTENSION_IDS`; the
    extension's `externally_connectable.matches` must equal exactly `[APP_ORIGIN + '/*']`.
-7. On JSlice, give the `jammerly` app its URL (`JAMMERLY_URL` = the alias) and a `loginPath` of `/login` so the
+7. On JSlice, give the `jammarly` app its URL (`JAMMARLY_URL` = the alias) and a `loginPath` of `/login` so the
    silent sign-in can land back here.
 8. Sign in, pair the first device from Overview, confirm the extension shows "paired", then watch Overview's Blob
    usage meters (warning at 80 % of the Hobby budget).
