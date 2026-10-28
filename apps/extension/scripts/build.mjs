@@ -34,6 +34,8 @@ if (APP_ORIGIN && !/^https:\/\/[a-z0-9.-]+$/i.test(APP_ORIGIN)) {
   throw new Error(`JAMMARLY_APP_ORIGIN must be an https origin without a path, got: ${APP_ORIGIN}`);
 }
 const GDOCS_ANNOUNCE_ID = process.env.JAMMARLY_GDOCS_ANNOUNCE_ID ?? '';
+/** Jammarly's own id, pinned by the manifest `key`. */
+const EXTENSION_ID = readFileSync(path.join(root, 'EXTENSION_ID'), 'utf8').trim();
 
 const existingEntries = Object.fromEntries(
   Object.entries(entries).filter(([, src]) => existsSync(path.join(root, src))),
@@ -83,9 +85,9 @@ async function copyStatic() {
         extension_pages: `script-src 'self'; object-src 'self'; connect-src https://api.anthropic.com ${APP_ORIGIN}`,
       };
     } else {
-      // Without an app origin no web page may message the extension; keep the key so Chrome does not default to
-      // allowing other extensions either.
-      manifest.externally_connectable = { matches: [] };
+      // Without an app origin no web page may message the extension. Keep the key so Chrome does not default to
+      // allowing every other extension, but name only Jammarly's own id: an empty list makes Chrome show a warning.
+      manifest.externally_connectable = { ids: [EXTENSION_ID] };
     }
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     // build.json identifies this exact build. An unpacked install compares it with the copy on disk and reloads

@@ -116,6 +116,6 @@
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://api.anthropic.com"
   },
   "externally_connectable": {
-    "matches": []
+    "ids": ["hkobmhfcoefpipbfkihdbbkgblckhkae"]
   }
 }
