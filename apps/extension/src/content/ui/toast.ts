@@ -11,10 +11,14 @@ export interface ToastOptions {
   /** When set, an Undo button is rendered and `onUndo` fires on click. */
   undoLabel?: string;
   onUndo?: () => void;
+  /** A spinner before the message: work in progress (pair with durationMs 0 and dismiss when done). */
+  spinner?: boolean;
 }
 
 export interface ToastHandle {
   readonly element: HTMLDivElement;
+  /** Replace the message in place (a progress toast counting up), without re-announcing a new toast. */
+  setMessage(message: string): void;
   dismiss(): void;
 }
 
@@ -33,8 +37,12 @@ export class ToastStack {
     const element = h('div', { class: 'jm-toast', 'data-jm': 'toast', role: 'status' });
     isolatePointerEvents(element);
 
+    const msg = h('span', { class: 'jm-toast-msg' }, message);
     const handle: ToastHandle = {
       element,
+      setMessage: (next: string) => {
+        msg.textContent = next;
+      },
       dismiss: () => {
         if (timer) clearTimeout(timer);
         timer = null;
@@ -44,7 +52,8 @@ export class ToastStack {
       },
     };
 
-    element.appendChild(h('span', { class: 'jm-toast-msg' }, message));
+    if (opts.spinner) element.appendChild(svgIcon('spinner', 15));
+    element.appendChild(msg);
     if (opts.onUndo) {
       const onUndo = opts.onUndo;
       element.appendChild(

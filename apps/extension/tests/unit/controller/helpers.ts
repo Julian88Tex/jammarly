@@ -430,6 +430,7 @@ export class FakeFieldOverlay implements FieldOverlay {
   focused: string | null = null;
   menuOpen = false;
   toasts: { message: string; options?: { undoTransactionId?: string; durationMs?: number } }[] = [];
+  progressLog: (string | null)[] = [];
   unsupportedReason: string | null = null;
   disposed = false;
 
@@ -487,6 +488,9 @@ export class FakeFieldOverlay implements FieldOverlay {
     this.menuOpen = false;
   }
 
+  progress(message: string | null): void {
+    this.progressLog.push(message);
+  }
   toast(message: string, options?: { undoTransactionId?: string; durationMs?: number }): void {
     this.toasts.push(options ? { message, options } : { message });
   }

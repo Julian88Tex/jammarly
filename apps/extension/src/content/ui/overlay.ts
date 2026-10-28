@@ -23,7 +23,7 @@ import { SuggestionCard } from './card';
 import { h } from './dom';
 import { AcceptMenu, type MenuContext } from './menu';
 import { applyStyles, type StyleMode } from './styles';
-import { ToastStack } from './toast';
+import { ToastStack, type ToastHandle } from './toast';
 import { UnderlineLayer, toRectLike, type RectLike } from './underlines';
 import { sentenceGroupFor, type SentenceGroup } from './sentence';
 
@@ -111,6 +111,8 @@ interface FieldRecord {
   box: RectLike | null;
   /** "Show one at a time" was chosen in a sentence card: single cards for the rest of the field session. */
   oneAtATime: boolean;
+  /** The live progress toast (Accept everything rounds), if one is showing. */
+  progress: ToastHandle | null;
   api: FieldOverlay;
 }
 
@@ -272,6 +274,7 @@ class OverlayImpl implements Overlay {
       optedOut: false,
       box: null,
       oneAtATime: false,
+      progress: null,
       api: null as unknown as FieldOverlay,
     };
     record.api = this.makeFieldApi(record);
@@ -293,6 +296,8 @@ class OverlayImpl implements Overlay {
     if (this.card.currentTarget()?.fieldId === fieldId) this.closeCard();
     if (this.menu.currentFieldId() === fieldId) this.menu.close();
     if (this.hover?.fieldId === fieldId) this.clearHover();
+    f.progress?.dismiss();
+    f.progress = null;
     f.layer.dispose();
     f.button.dispose();
   }
@@ -392,6 +397,15 @@ class OverlayImpl implements Overlay {
           onUndo: tx ? () => overlay.events.onUndo(f.fieldId, tx) : undefined,
         });
         if (overlay.menu.currentFieldId() === f.fieldId) overlay.menu.refresh(overlay.menuContext(f));
+      },
+      progress(message) {
+        if (message === null) {
+          f.progress?.dismiss();
+          f.progress = null;
+          return;
+        }
+        if (f.progress && f.progress.element.isConnected) f.progress.setMessage(message);
+        else f.progress = overlay.toasts.show(message, { durationMs: 0, spinner: true });
       },
       setUnsupported(reason) {
         f.unsupportedReason = reason;
