@@ -27,7 +27,7 @@ Slashy, 07 Vercel backend, 08 personalization); decisions below cite them as `[R
 
 ```
 apps/extension        Chrome MV3 extension (esbuild, vitest + jsdom, Playwright e2e in headless Chromium)
-apps/web              Next.js 16 app on Vercel (owner login, device pairing, profile sync, learning, dashboard)
+apps/web              Next.js 16 app on Vercel (JSlice sign-in, device pairing, profile sync, learning, dashboard)
 packages/shared       @jammarly/shared: types, text utilities, local rules, prompts, learning, profile schema
 ```
 
@@ -258,7 +258,7 @@ re-checks intersection at apply time.
   make sense across devices (goals, categories, dialect, custom instructions, models and engine mode, privacy consent,
   dictionary, muted rules, site overrides, voice profiles, learned state). Scalars are last-writer-wins registers
   keyed by fixed-width hybrid logical clocks; sets are add-wins observed-remove sets [R07 §9.2]. Device ops are
-  typed (`LwwPath`, `SetPath`); `voice` and `learning` ops are accepted only from the owner session or the cron, and
+  typed (`LwwPath`, `SetPath`); `voice` and `learning` ops are accepted only from a dashboard session or the cron, and
   the **learning section is server-authoritative when paired**: the worker folds events into a device-local shadow
   for immediate effect and replaces it with `profile.learning` on every successful poll (unpaired devices fold into
   the profile copy directly). The same merge code runs on the device and the server.
@@ -325,13 +325,21 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
 
 * Next.js 16.4 App Router, Node 24, Fluid Compute, region `iad1`, `maxDuration` 60 for API routes and 300 for the
   learning routes [R07 §9.1].
-* **Auth:** single owner. `OWNER_PASSWORD_HASH` (scrypt) + iron-session v9 sealed cookie. Device bearer tokens
-  (`jm1.<deviceId>.<secret>`, stored hashed). Upgrade path: Auth.js Google provider.
-* **Storage:** one private Vercel Blob store (OIDC). Paths `users/owner/profile.json` (ETag CAS),
-  `users/owner/version.json` (tiny, served cached for polling), `.../snapshots/`, `.../events/<date>/<device>.jsonl`,
-  `.../events/index.json` (never `list()` in the hot path), `.../devices.json`, `auth/pairings/<id>.json`. The daily
+* **Auth:** many users through JSlice (Google single sign-on, `JSLICE_URL`). JSlice hands back a 60 s ES256 JWT
+  (`aud` = `jammarly`) at `/api/auth/jslice`; the route verifies it against JSlice's JWKS, accepts each `jti` once and
+  starts an iron-session v9 sealed cookie whose `uid` is the token's `sub` (the stable Google id). `/login` first tries
+  a silent sign-in (`/launch/jammarly?silent=1`) and shows **Continue with JSlice** when JSlice answers
+  `jslice=none`; sign-out lands on `/login?jslice=none`. Device bearer tokens (`jm1.<deviceId>.<secret>`, stored
+  hashed) resolve to their user through `auth/devices/<deviceId>.json`.
+* **Storage:** one private Vercel Blob store (OIDC). Every user's documents live under `users/<sub>/`:
+  `profile.json` (ETag CAS), `version.json` (tiny, served cached for polling), `snapshots/`,
+  `events/<date>/<device>.jsonl`, `events/index.json` (never `list()` in the hot path), `devices.json`,
+  `pairings/<id>.json`, `runs/`, `server-key.json`, `account.json`. Lookups needed before the user is known hold only
+  pointers: `auth/users/<sub>.json` (the cron's user list), `auth/devices/<id>.json` and `auth/pairings/<id>.json`
+  (`{ uid }`), `auth/jti/` (used tokens); `system/quota.json` keeps the store-wide operation counters. The daily
   fold compacts event batches into counters and deletes the raw blobs. Budget target: ≈ 1,200 advanced and ≈ 5,000
-  simple operations per month for three devices, inside the Hobby caps [R09 §1.11].
+  simple operations per month for three devices, inside the Hobby caps [R09 §1.11]. The budget is per store, so every
+  user shares it.
 * **Pairing:** the dashboard calls `chrome.runtime.sendMessage(EXTENSION_ID, {type:'jammarly.pair', pairingId, code})`
   (`externally_connectable` pinned to the production origin); the worker accepts the message only when
   `sender.origin === APP_ORIGIN` (compiled into the build) and redeems against that origin, ignoring any origin in the
@@ -341,7 +349,7 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
 * **Clocks and ops:** HLCs are `<13-digit ms>-<4-digit counter>-<deviceId>`; the server rejects ops more than 5
   minutes ahead of its clock (`hlc_skew`), rejects paths outside the allowlist (`op_not_allowed`), validates values with
   the shared zod schemas (`schema_invalid`), and caps profile writes at 10 per hour per device (`quota_exceeded`).
-* **API:** `/api/auth/login|logout`, `/api/devices` (list, revoke, `pair/start`, `pair/redeem`, `rotate`),
+* **API:** `/api/auth/jslice|logout`, `/api/devices` (list, revoke, `pair/start`, `pair/redeem`, `rotate`),
   `/api/profile` (GET with ETag, PUT with If-Match, `ops` merge, `version` tiny cached document), `/api/events`,
   `/api/learning/summary|run|status`, `/api/learning/data` (DELETE: every server artifact), `/api/export`,
   `/api/server-key` (status; set from the dashboard), `/api/cron/synthesize?ctx=messages|documents` (`CRON_SECRET`),
@@ -361,10 +369,11 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
   paste → check → Accept all → copy flow lives in the extension's side panel, not in the web app.
 * **Contexts:** events and scopes use `email | chat | doc | social | code | other`; voice profiles use
   `messages` (email, chat, social) and `documents` (doc, other); `code` gets no voice profile [R09 §1.13].
-* **Learning job:** two cron entries (`?ctx=messages` at 03:00 UTC, `?ctx=documents` at 04:00 UTC); the first also
-  folds events into counters and runs the deterministic learner. Each handler is idempotent and resumable: it writes
-  `users/owner/runs/<date>-<ctx>.json` with stage checkpoints (the persistent log, since Hobby keeps runtime logs for
-  an hour), sets the SDK `timeout` from `getDeadline()` with `maxRetries: 0`, records `partial` and stops cleanly when
+* **Learning job:** two cron entries (`?ctx=messages` at 03:00 UTC, `?ctx=documents` at 04:00 UTC); each visits every
+  user with batches newer than their last run for that context (in an order rotated daily, until under 20 s remain)
+  and runs the job for them; the first also folds events into counters and runs the deterministic learner. Each run is
+  idempotent and resumable: it writes `users/<sub>/runs/<date>-<ctx>.json` with stage checkpoints (the persistent
+  log, since Hobby keeps runtime logs for an hour), sets the SDK `timeout` from `getDeadline()` with `maxRetries: 0`, records `partial` and stops cleanly when
   under 20 s remain, uses `max_tokens ≥ 8000` (thinking is billed as output), and on `refusal` or `max_tokens` keeps the
   previous profile version and appends the reason to `learning.history`. Synthesis uses `claude-opus-5-5` with
   structured output and effort medium; the result is linted (regex plus a Haiku classifier) so it can never relax
@@ -373,9 +382,9 @@ content scripts carry their own CSP in Chrome [R09 §1.18].
   sampled words arrived. "Run now" on the dashboard (`POST /api/learning/run`, ≤ 3/day) is the manual retry.
 * **Deployment (provisioning order, team-scoped API):** create project `jammarly-web` linked to
   `Julian88Tex/jammarly` with root directory `apps/web` and Fluid Compute; create the private Blob store bound to it;
-  set env vars `SESSION_SECRET`, `OWNER_PASSWORD_HASH`, `CRON_SECRET` (sensitive, production + preview),
+  set env vars `SESSION_SECRET`, `CRON_SECRET` (sensitive, production + preview), `JSLICE_URL`,
   `APP_ORIGIN` (the production alias), `EXTENSION_IDS` (plain) and optionally `ANTHROPIC_API_KEY` (sensitive,
-  server-only; the dashboard can set it instead); add one WAF rate-limit rule on `/api/auth/login` and
+  server-only; the dashboard can set it instead); add one WAF rate-limit rule on `/api/auth/jslice` and
   `/api/devices/pair/*`; create a production deployment from the PR branch until it merges; then build the extension
   with `JAMMARLY_APP_ORIGIN` set to the alias and record the extension id in `EXTENSION_IDS`.
 

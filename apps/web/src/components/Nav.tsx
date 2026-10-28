@@ -13,7 +13,7 @@ const LINKS = [
   { href: '/privacy', label: 'Privacy and data' },
 ] as const;
 
-export function Nav({ version }: { version: string }) {
+export function Nav({ version, account }: { version: string; account: string }) {
   const pathname = usePathname();
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -23,7 +23,8 @@ export function Nav({ version }: { version: string }) {
     try {
       await api('/api/auth/logout', { method: 'POST' });
     } finally {
-      router.replace('/login');
+      // jslice=none: do not try a silent JSlice sign-in right after signing out.
+      router.replace('/login?jslice=none');
     }
   }
 
@@ -46,7 +47,12 @@ export function Nav({ version }: { version: string }) {
           </Link>
         );
       })}
-      <div className="mt-auto flex items-center justify-between gap-2 px-2 pt-4 text-[12.5px] text-muted">
+      {account.length > 0 ? (
+        <p className="mt-auto truncate px-2 pt-4 text-[12.5px] text-muted" title={account}>
+          {account}
+        </p>
+      ) : null}
+      <div className={`${account.length > 0 ? '' : 'mt-auto '}flex items-center justify-between gap-2 px-2 pt-2 text-[12.5px] text-muted`}>
         <span>v{version}</span>
         <button type="button" className="btn btn-secondary btn-sm" onClick={logout} disabled={busy}>
           Sign out

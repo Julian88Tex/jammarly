@@ -9,8 +9,8 @@ import { GET as GET_PROFILE } from '@/app/api/profile/route';
 import { requireDevice } from '@/lib/auth';
 import { authenticateDeviceToken, parseToken } from '@/lib/devices';
 import { PAIRING_TTL_MS, redeemPairing, startPairing } from '@/lib/pairing';
-import { PATHS } from '@/lib/store';
-import { EXT_ORIGIN, deviceHeaders, freshStore, json, loginCookie, ownerHeaders, pairDevice, params, req } from './helpers';
+
+import { EXT_ORIGIN, deviceHeaders, freshStore, json, loginCookie, ownerHeaders, pairDevice, params, req, TEST_UID, P } from './helpers';
 
 let cookie: string;
 
@@ -48,7 +48,7 @@ describe('pairing', () => {
   });
 
   it('rejects a wrong code, an unknown pairing and an expired pairing', async () => {
-    const started = await startPairing();
+    const started = await startPairing(TEST_UID);
     await expect(redeemPairing({ pairingId: started.pairingId, code: started.code === '000000' ? '000001' : '000000', device: { name: 'x', platform: 'mac', extVersion: '1' } })).rejects.toMatchObject({ status: 400, code: 'pairing_invalid' });
     await expect(redeemPairing({ pairingId: '0123456789abcdef', code: '123456', device: { name: 'x', platform: 'mac', extVersion: '1' } })).rejects.toMatchObject({ code: 'pairing_invalid' });
     await expect(redeemPairing({ pairingId: started.pairingId, code: started.code, device: { name: 'x', platform: 'mac', extVersion: '1' } }, Date.now() + PAIRING_TTL_MS + 1)).rejects.toMatchObject({ status: 410, code: 'pairing_expired' });
@@ -113,7 +113,7 @@ describe('device auth', () => {
     const store = freshStore();
     cookie = await loginCookie();
     const paired = await pairDevice(cookie);
-    const raw = store.raw(PATHS.devices) ?? '';
+    const raw = store.raw(P.devices) ?? '';
     const secret = parseToken(paired.token)?.secret ?? '';
     expect(raw).not.toContain(secret);
     expect(raw).toContain('tokenHash');

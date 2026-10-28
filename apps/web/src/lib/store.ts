@@ -1,5 +1,5 @@
 /**
- * The owner's documents in Blob (architecture §4 "Storage"): the profile with ETag compare-and-swap, the tiny
+ * Each user's documents in Blob (architecture §4 "Storage"): the profile with ETag compare-and-swap, the tiny
  * version document and its 60-second in-memory cache, snapshots, the op path with its allowlist and quota, and
  * the Blob operation / per-device counters in quota.json.
  *
@@ -17,25 +17,67 @@ import { ApiRouteError } from './errors';
 // Paths
 // ---------------------------------------------------------------------------
 
-export const OWNER_PREFIX = 'users/owner';
+/**
+ * A user id is the JSlice `sub` (the stable Google subject). It becomes a Blob path segment, so it is checked
+ * strictly before any path is built.
+ */
+export const USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
-export const PATHS = {
-  profile: `${OWNER_PREFIX}/profile.json`,
-  version: `${OWNER_PREFIX}/version.json`,
-  snapshotPrefix: `${OWNER_PREFIX}/snapshots/`,
-  snapshot: (version: number): string => `${OWNER_PREFIX}/snapshots/profile.v${version}.json`,
-  devices: `${OWNER_PREFIX}/devices.json`,
-  eventsPrefix: `${OWNER_PREFIX}/events/`,
-  eventsIndex: `${OWNER_PREFIX}/events/index.json`,
-  eventsBatch: (day: string, deviceId: string): string => `${OWNER_PREFIX}/events/${day}/${deviceId}.jsonl`,
-  samplesPrefix: `${OWNER_PREFIX}/samples/`,
-  samplesBatch: (day: string, deviceId: string): string => `${OWNER_PREFIX}/samples/${day}/${deviceId}.jsonl`,
-  runsPrefix: `${OWNER_PREFIX}/runs/`,
-  run: (date: string, ctx: string): string => `${OWNER_PREFIX}/runs/${date}-${ctx}.json`,
-  runsLatest: `${OWNER_PREFIX}/runs/latest.json`,
-  serverKey: `${OWNER_PREFIX}/server-key.json`,
-  quota: `${OWNER_PREFIX}/quota.json`,
+export function isUserId(uid: unknown): uid is string {
+  return typeof uid === 'string' && USER_ID_RE.test(uid);
+}
+
+export function assertUserId(uid: string): string {
+  if (!isUserId(uid)) throw new Error('invalid user id');
+  return uid;
+}
+
+/** Every per-user document lives under `users/<uid>/`. */
+export function userPrefix(uid: string): string {
+  return `users/${assertUserId(uid)}`;
+}
+
+export function userPaths(uid: string) {
+  const base = userPrefix(uid);
+  return {
+    account: `${base}/account.json`,
+    profile: `${base}/profile.json`,
+    version: `${base}/version.json`,
+    snapshotPrefix: `${base}/snapshots/`,
+    snapshot: (version: number): string => `${base}/snapshots/profile.v${version}.json`,
+    devices: `${base}/devices.json`,
+    pairing: (id: string): string => `${base}/pairings/${id}.json`,
+    eventsPrefix: `${base}/events/`,
+    eventsIndex: `${base}/events/index.json`,
+    eventsBatch: (day: string, deviceId: string): string => `${base}/events/${day}/${deviceId}.jsonl`,
+    samplesPrefix: `${base}/samples/`,
+    samplesBatch: (day: string, deviceId: string): string => `${base}/samples/${day}/${deviceId}.jsonl`,
+    runsPrefix: `${base}/runs/`,
+    run: (date: string, ctx: string): string => `${base}/runs/${date}-${ctx}.json`,
+    runsLatest: `${base}/runs/latest.json`,
+    serverKey: `${base}/server-key.json`,
+  } as const;
+}
+
+export type UserPaths = ReturnType<typeof userPaths>;
+
+/**
+ * Lookups that must work before the user is known, plus the store-wide Blob counters. They hold pointers
+ * (`{ uid }`) or one-time markers, never user data.
+ */
+export const GLOBAL_PATHS = {
+  /** One marker per user; the cron lists this prefix to find every user. */
+  usersPrefix: 'auth/users/',
+  user: (uid: string): string => `auth/users/${assertUserId(uid)}.json`,
+  /** deviceId -> { uid }, so a bearer token resolves to its user. */
+  device: (deviceId: string): string => `auth/devices/${deviceId}.json`,
+  /** pairingId -> { uid }, so the unauthenticated redeem finds the user's pairing document. */
   pairing: (id: string): string => `auth/pairings/${id}.json`,
+  /** Used JSlice token ids (sha256), kept so a token works once. */
+  jtiPrefix: 'auth/jti/',
+  jti: (hash: string): string => `auth/jti/${hash}.json`,
+  /** Blob operation counters for the whole store (the Hobby budget is per store) and per-device write counters. */
+  quota: 'system/quota.json',
 } as const;
 
 export const HLC_SKEW_MS = 5 * 60 * 1000;
@@ -71,7 +113,9 @@ export interface QuotaDoc {
 
 const pending = { simple: 0, advanced: 0 };
 let quotaCache: { doc: QuotaDoc; at: number } | null = null;
-let versionCache: { version: number; etag: string; at: number } | null = null;
+/** Per-user { version, etag } written or read within the last 60 s (bounded; cleared when it grows large). */
+const versionCache = new Map<string, { version: number; etag: string; at: number }>();
+const VERSION_CACHE_MAX_USERS = 5000;
 const serverClock: HlcClock = createClock('server');
 
 export function serverHlc(): Hlc {
@@ -119,7 +163,7 @@ export function blob(): BlobStore {
 /** Forget in-memory caches (tests swap the blob store between cases). */
 export function resetStoreCachesForTests(): void {
   quotaCache = null;
-  versionCache = null;
+  versionCache.clear();
   pending.simple = 0;
   pending.advanced = 0;
 }
@@ -140,11 +184,14 @@ function emptyQuota(nowMs: number): QuotaDoc {
 
 async function loadQuota(nowMs: number): Promise<QuotaDoc> {
   if (quotaCache !== null && nowMs - quotaCache.at < VERSION_CACHE_MS) return quotaCache.doc;
-  const res = await getBlobStore().getJson<QuotaDoc>(PATHS.quota);
+  const res = await getBlobStore().getJson<QuotaDoc>(GLOBAL_PATHS.quota);
   pending.simple += 1;
   let doc: QuotaDoc = res !== null && !isNotModified(res) && typeof res.value === 'object' && res.value !== null ? res.value : emptyQuota(nowMs);
   if (doc.month !== monthOf(nowMs)) doc = emptyQuota(nowMs);
   if (typeof doc.perDevice !== 'object' || doc.perDevice === null) doc.perDevice = {};
+  // Counters of devices that wrote nothing today are worthless; drop them so the document stays small.
+  const today = dayOf(nowMs);
+  for (const [id, dev] of Object.entries(doc.perDevice)) if (dev?.day !== today) delete doc.perDevice[id];
   quotaCache = { doc, at: nowMs };
   return doc;
 }
@@ -156,7 +203,7 @@ export async function persistQuota(nowMs: number = Date.now()): Promise<QuotaDoc
   doc.simpleOps += pending.simple;
   pending.advanced = 0;
   pending.simple = 0;
-  await getBlobStore().putJson(PATHS.quota, doc);
+  await getBlobStore().putJson(GLOBAL_PATHS.quota, doc);
   quotaCache = { doc, at: nowMs };
   return doc;
 }
@@ -169,15 +216,23 @@ export interface QuotaStatus {
   perDevice: Record<string, QuotaDeviceCounters>;
 }
 
-/** Current counters including operations not yet persisted. */
-export async function getQuotaStatus(nowMs: number = Date.now()): Promise<QuotaStatus> {
+/**
+ * Current store-wide counters including operations not yet persisted. `deviceIds` limits the per-device
+ * counters to those devices (a user only ever sees their own).
+ */
+export async function getQuotaStatus(deviceIds: readonly string[], nowMs: number = Date.now()): Promise<QuotaStatus> {
   const doc = await loadQuota(nowMs);
+  const perDevice: Record<string, QuotaDeviceCounters> = {};
+  for (const id of deviceIds) {
+    const dev = doc.perDevice[id];
+    if (dev !== undefined) perDevice[id] = cloneData(dev);
+  }
   return {
     month: doc.month,
     advancedOps: doc.advancedOps + pending.advanced,
     simpleOps: doc.simpleOps + pending.simple,
     limits: { ...BLOB_LIMITS },
-    perDevice: cloneData(doc.perDevice),
+    perDevice,
   };
 }
 
@@ -233,17 +288,20 @@ export class ProfileConflict extends Error {
   }
 }
 
-function rememberVersion(version: number, etag: string, nowMs: number): void {
-  versionCache = { version, etag, at: nowMs };
+function rememberVersion(uid: string, version: number, etag: string, nowMs: number): void {
+  if (versionCache.size >= VERSION_CACHE_MAX_USERS && !versionCache.has(uid)) versionCache.clear();
+  versionCache.set(uid, { version, etag, at: nowMs });
 }
 
-/** The cached { version, etag } when it was written or read within the last 60 s. */
-export function cachedVersion(nowMs: number = Date.now()): { version: number; etag: string } | null {
-  if (versionCache === null || nowMs - versionCache.at >= VERSION_CACHE_MS) return null;
-  return { version: versionCache.version, etag: versionCache.etag };
+/** The user's cached { version, etag } when it was written or read within the last 60 s. */
+export function cachedVersion(uid: string, nowMs: number = Date.now()): { version: number; etag: string } | null {
+  const hit = versionCache.get(uid);
+  if (hit === undefined || nowMs - hit.at >= VERSION_CACHE_MS) return null;
+  return { version: hit.version, etag: hit.etag };
 }
 
-async function createInitialProfile(nowMs: number): Promise<ProfileLoaded> {
+async function createInitialProfile(uid: string, nowMs: number): Promise<ProfileLoaded> {
+  const PATHS = userPaths(uid);
   const store = blob();
   const nowIso = new Date(nowMs).toISOString();
   const doc = defaultProfile(nowIso);
@@ -251,7 +309,7 @@ async function createInitialProfile(nowMs: number): Promise<ProfileLoaded> {
   doc.settings.userSalt = { value: randomHex(32), hlc: serverHlc() };
   try {
     const { etag } = await store.putJson(PATHS.profile, doc, { allowOverwrite: false });
-    rememberVersion(doc.version, etag, nowMs);
+    rememberVersion(uid, doc.version, etag, nowMs);
     await store.putJson(PATHS.version, { version: doc.version, etag });
     return { profile: doc, etag, version: doc.version };
   } catch {
@@ -259,18 +317,18 @@ async function createInitialProfile(nowMs: number): Promise<ProfileLoaded> {
     const again = await store.getJson<unknown>(PATHS.profile);
     if (again === null || isNotModified(again)) throw new Error('profile could not be created');
     const profile = migrateProfile(again.value);
-    rememberVersion(profile.version, again.etag, nowMs);
+    rememberVersion(uid, profile.version, again.etag, nowMs);
     return { profile, etag: again.etag, version: profile.version };
   }
 }
 
-/** Read the profile (creating the default document on first read). */
-export async function loadProfile(nowMs: number = Date.now()): Promise<ProfileLoaded> {
-  const res = await blob().getJson<unknown>(PATHS.profile);
-  if (res === null) return createInitialProfile(nowMs);
+/** Read the user's profile (creating the default document on first read). */
+export async function loadProfile(uid: string, nowMs: number = Date.now()): Promise<ProfileLoaded> {
+  const res = await blob().getJson<unknown>(userPaths(uid).profile);
+  if (res === null) return createInitialProfile(uid, nowMs);
   if (isNotModified(res)) throw new Error('unexpected 304 without If-None-Match');
   const profile = migrateProfile(res.value);
-  rememberVersion(profile.version, res.etag, nowMs);
+  rememberVersion(uid, profile.version, res.etag, nowMs);
   return { profile, etag: res.etag, version: profile.version };
 }
 
@@ -278,34 +336,34 @@ export async function loadProfile(nowMs: number = Date.now()): Promise<ProfileLo
  * Conditional read for GET /api/profile: answers "not modified" from the 60-second cache without touching
  * Blob when the client's ETag is the one last written or read, otherwise asks Blob with If-None-Match.
  */
-export async function loadProfileConditional(ifNoneMatch: string | null, nowMs: number = Date.now()): Promise<ProfileLoaded | { notModified: true; etag: string; version: number }> {
+export async function loadProfileConditional(uid: string, ifNoneMatch: string | null, nowMs: number = Date.now()): Promise<ProfileLoaded | { notModified: true; etag: string; version: number }> {
   if (ifNoneMatch !== null) {
-    const cached = cachedVersion(nowMs);
+    const cached = cachedVersion(uid, nowMs);
     if (cached !== null && etagsEqual(ifNoneMatch, cached.etag)) return { notModified: true, etag: cached.etag, version: cached.version };
-    const res = await blob().getJson<unknown>(PATHS.profile, { ifNoneMatch });
-    if (res === null) return createInitialProfile(nowMs);
+    const res = await blob().getJson<unknown>(userPaths(uid).profile, { ifNoneMatch });
+    if (res === null) return createInitialProfile(uid, nowMs);
     if (isNotModified(res)) {
       // Cold cache: version.json is one cheap read and refreshes the cache.
-      const v = cachedVersion(nowMs) ?? (await getProfileVersion(nowMs));
+      const v = cachedVersion(uid, nowMs) ?? (await getProfileVersion(uid, nowMs));
       return { notModified: true, etag: ifNoneMatch, version: v.version };
     }
     const profile = migrateProfile(res.value);
-    rememberVersion(profile.version, res.etag, nowMs);
+    rememberVersion(uid, profile.version, res.etag, nowMs);
     return { profile, etag: res.etag, version: profile.version };
   }
-  return loadProfile(nowMs);
+  return loadProfile(uid, nowMs);
 }
 
 /** { version, etag } for the polling route: the module cache for 60 s, then version.json, then the profile. */
-export async function getProfileVersion(nowMs: number = Date.now()): Promise<{ version: number; etag: string }> {
-  const cached = cachedVersion(nowMs);
+export async function getProfileVersion(uid: string, nowMs: number = Date.now()): Promise<{ version: number; etag: string }> {
+  const cached = cachedVersion(uid, nowMs);
   if (cached !== null) return cached;
-  const res = await blob().getJson<{ version: number; etag: string }>(PATHS.version);
+  const res = await blob().getJson<{ version: number; etag: string }>(userPaths(uid).version);
   if (res !== null && !isNotModified(res) && typeof res.value?.version === 'number' && typeof res.value.etag === 'string') {
-    rememberVersion(res.value.version, res.value.etag, nowMs);
+    rememberVersion(uid, res.value.version, res.value.etag, nowMs);
     return { version: res.value.version, etag: res.value.etag };
   }
-  const loaded = await loadProfile(nowMs);
+  const loaded = await loadProfile(uid, nowMs);
   return { version: loaded.version, etag: loaded.etag };
 }
 
@@ -323,13 +381,14 @@ export interface SaveProfileOptions {
  * returns the next one (it may throw an ApiRouteError to abort). The version is incremented on every
  * accepted write, version.json is refreshed, and every 10th version gets a snapshot.
  */
-export async function saveProfile(mutate: (doc: ProfileDocument) => ProfileDocument, opts: SaveProfileOptions = {}): Promise<ProfileLoaded> {
+export async function saveProfile(uid: string, mutate: (doc: ProfileDocument) => ProfileDocument, opts: SaveProfileOptions = {}): Promise<ProfileLoaded> {
+  const PATHS = userPaths(uid);
   const store = blob();
   const nowMs = opts.nowMs ?? Date.now();
   const nowIso = new Date(nowMs).toISOString();
   let last: ProfileLoaded | null = null;
   for (let attempt = 0; attempt < SAVE_RETRIES; attempt += 1) {
-    const current = await loadProfile(nowMs);
+    const current = await loadProfile(uid, nowMs);
     last = current;
     if (opts.ifMatch !== undefined && !etagsEqual(opts.ifMatch, current.etag)) throw new ProfileConflict(current, 'precondition_failed');
     const mutated = mutate(cloneData(current.profile));
@@ -344,7 +403,7 @@ export async function saveProfile(mutate: (doc: ProfileDocument) => ProfileDocum
     if (opts.by !== undefined) next.updatedBy = opts.by;
     try {
       const { etag } = await store.putJson(PATHS.profile, next, { ifMatch: current.etag, allowOverwrite: true });
-      rememberVersion(next.version, etag, nowMs);
+      rememberVersion(uid, next.version, etag, nowMs);
       await store.putJson(PATHS.version, { version: next.version, etag });
       if (opts.snapshot === true || next.version % SNAPSHOT_EVERY === 0) {
         await store.putJson(PATHS.snapshot(next.version), next);
@@ -355,17 +414,19 @@ export async function saveProfile(mutate: (doc: ProfileDocument) => ProfileDocum
       throw err;
     }
   }
-  throw new ProfileConflict(last ?? (await loadProfile(nowMs)), 'conflict_retry');
+  throw new ProfileConflict(last ?? (await loadProfile(uid, nowMs)), 'conflict_retry');
 }
 
 // ---------------------------------------------------------------------------
 // Ops
 // ---------------------------------------------------------------------------
 
-export type Actor = { kind: 'device'; deviceId: string } | { kind: 'owner' } | { kind: 'cron' };
+/** Who is writing: one of the user's devices, the user on the dashboard, or the learning job. */
+export type Actor = { kind: 'device'; deviceId: string } | { kind: 'user' } | { kind: 'cron' };
 
-function actorName(actor: Actor): string {
-  return actor.kind === 'device' ? actor.deviceId : actor.kind;
+export function actorName(actor: Actor): string {
+  if (actor.kind === 'device') return actor.deviceId;
+  return actor.kind === 'user' ? 'dashboard' : 'cron';
 }
 
 /** Structural validation, allowlist and clock-skew checks for a batch of ops (400 errors). */
@@ -398,11 +459,12 @@ export function validateOps(rawOps: unknown, actor: Actor, nowMs: number): Profi
 }
 
 /** Validate, enforce the device quota, merge with the shared rules and write (CAS with retries). */
-export async function applyProfileOps(rawOps: unknown, actor: Actor, nowMs: number = Date.now()): Promise<ProfileLoaded> {
+export async function applyProfileOps(uid: string, rawOps: unknown, actor: Actor, nowMs: number = Date.now()): Promise<ProfileLoaded> {
   const ops = validateOps(rawOps, actor, nowMs);
   if (actor.kind === 'device') await bumpDeviceQuota(actor.deviceId, 'profileWrites', nowMs);
   const nowIso = new Date(nowMs).toISOString();
   return saveProfile(
+    uid,
     (doc) => {
       const result = applyOps(doc, ops, { now: nowIso, by: actorName(actor) });
       const rejected = result.rejected[0];
@@ -417,6 +479,6 @@ export async function applyProfileOps(rawOps: unknown, actor: Actor, nowMs: numb
 }
 
 /** List the snapshot blobs (an advanced op; never on the hot path). */
-export async function listSnapshots(): Promise<BlobListEntry[]> {
-  return blob().list(PATHS.snapshotPrefix);
+export async function listSnapshots(uid: string): Promise<BlobListEntry[]> {
+  return blob().list(userPaths(uid).snapshotPrefix);
 }

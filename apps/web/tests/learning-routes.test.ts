@@ -11,8 +11,8 @@ import { POST as POST_OPS } from '@/app/api/profile/ops/route';
 import { DELETE as KEY_DELETE, GET as KEY_GET, PUT as KEY_PUT } from '@/app/api/server-key/route';
 import type { MemoryBlobStore } from '@/lib/blob';
 import { getServerApiKey } from '@/lib/server-key';
-import { PATHS, loadProfile, saveProfile } from '@/lib/store';
-import { deviceHeaders, freshStore, hlc, json, loginCookie, makeEvent, makeSample, ownerHeaders, pairDevice, params, req, setupEnv } from './helpers';
+import { loadProfile, saveProfile } from '@/lib/store';
+import { deviceHeaders, freshStore, hlc, json, loginCookie, makeEvent, makeSample, ownerHeaders, pairDevice, params, req, setupEnv, TEST_UID, P } from './helpers';
 
 let store: MemoryBlobStore;
 let cookie: string;
@@ -67,20 +67,20 @@ describe('GET /api/export and DELETE /api/learning/data', () => {
   it('deletes every learning artifact and resets the learning section with a new clock', async () => {
     const device = await pairDevice(cookie);
     await uploadSome(device.token, 3);
-    for (let i = 0; i < 10; i += 1) await saveProfile((doc) => doc);
-    await store.putJson(PATHS.run('2026-10-21', 'messages'), { runId: 'x' });
-    await saveProfile((doc) => {
+    for (let i = 0; i < 10; i += 1) await saveProfile(TEST_UID, (doc) => doc);
+    await store.putJson(P.run('2026-10-21', 'messages'), { runId: 'x' });
+    await saveProfile(TEST_UID, (doc) => {
       doc.voice.profiles.messages = mockVoiceProfile('messages');
       doc.learning.dictionaryCandidates = ['Bloop'];
       doc.learning.stats['global||x'] = { shown: 1, accepted: 1, dismissed: 0, ignored: 0, reported: 0, lastSeen: '' };
       return doc;
     });
-    const before = (await loadProfile()).profile.learning.updatedHlc;
+    const before = (await loadProfile(TEST_UID)).profile.learning.updatedHlc;
     const res = await DELETE_DATA(req('/api/learning/data', { method: 'DELETE', headers: ownerHeaders(cookie) }), params({}));
     expect(res.status).toBe(200);
     const body = await json<LearningDataDeleteResponse>(res);
     expect(body.deleted).toMatchObject({ events: 1, samples: 1, snapshots: 1, runs: 1 });
-    const { profile } = await loadProfile();
+    const { profile } = await loadProfile(TEST_UID);
     expect(profile.learning.stats).toEqual({});
     expect(profile.learning.dictionaryCandidates).toEqual([]);
     expect(profile.learning.lastEventCursor).toBe('');
@@ -117,7 +117,7 @@ describe('POST /api/learning/run and GET /api/learning/status', () => {
     expect(put.status).toBe(200);
     const older = { ...v3, version: 2, summary: 'older' };
     await POST_OPS(req('/api/profile/ops', { body: { baseVersion: 1, ops: [{ op: 'voice', context: 'messages', profile: older, hlc: hlc('web') }] }, headers: ownerHeaders(cookie) }), params({}));
-    expect((await loadProfile()).profile.voice.profiles.messages?.summary).toBe(v3.summary);
+    expect((await loadProfile(TEST_UID)).profile.voice.profiles.messages?.summary).toBe(v3.summary);
   });
 });
 
@@ -129,8 +129,8 @@ describe('server key', () => {
     const set = await KEY_PUT(req('/api/server-key', { method: 'PUT', body: { apiKey: key }, headers: ownerHeaders(cookie) }), params({}));
     expect(set.status).toBe(200);
     expect(await json<ServerKeyStatusResponse>(set)).toEqual({ configured: true, hint: 'fXYZ' });
-    expect(store.raw(PATHS.serverKey)).not.toContain(key);
-    expect(await getServerApiKey()).toEqual({ key, source: 'dashboard' });
+    expect(store.raw(P.serverKey)).not.toContain(key);
+    expect(await getServerApiKey(TEST_UID)).toEqual({ key, source: 'dashboard' });
     const bad = await KEY_PUT(req('/api/server-key', { method: 'PUT', body: { apiKey: 'has spaces in it which is wrong' }, headers: ownerHeaders(cookie) }), params({}));
     expect(bad.status).toBe(400);
     expect((await json<ApiError>(bad)).error.code).toBe('schema_invalid');
@@ -140,7 +140,7 @@ describe('server key', () => {
 
   it('falls back to ANTHROPIC_API_KEY from the environment', async () => {
     setupEnv({ ANTHROPIC_API_KEY: 'sk-ant-env-key-0123456789abcdef-ENV1' });
-    expect(await getServerApiKey()).toEqual({ key: 'sk-ant-env-key-0123456789abcdef-ENV1', source: 'env' });
+    expect(await getServerApiKey(TEST_UID)).toEqual({ key: 'sk-ant-env-key-0123456789abcdef-ENV1', source: 'env' });
     const status = await json<ServerKeyStatusResponse>(await KEY_GET(req('/api/server-key', { headers: { cookie } }), params({})));
     expect(status).toEqual({ configured: true, hint: 'ENV1' });
   });
@@ -148,6 +148,6 @@ describe('server key', () => {
   it('cannot be opened with a different SESSION_SECRET', async () => {
     await KEY_PUT(req('/api/server-key', { method: 'PUT', body: { apiKey: 'sk-ant-api03-another-key-0123456789' }, headers: ownerHeaders(cookie) }), params({}));
     setupEnv({ SESSION_SECRET: 'a-completely-different-secret-that-is-long-enough-1234' });
-    expect(await getServerApiKey()).toBeNull();
+    expect(await getServerApiKey(TEST_UID)).toBeNull();
   });
 });

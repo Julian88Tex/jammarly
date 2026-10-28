@@ -2,28 +2,31 @@
 import type { PairRedeemResponse, PairStartResponse } from '@jammarly/shared/api';
 import { formatHlc } from '@jammarly/shared/hlc';
 import type { FeedbackEvent, VoiceSample } from '@jammarly/shared/learning';
-import { resetLoginLimiterForTests, setLoginMinDelayForTests } from '@/lib/auth';
+import { SignJWT, generateKeyPair, type CryptoKey } from 'jose';
 import { MemoryBlobStore, setBlobStoreForTests } from '@/lib/blob';
-import { hashPassword } from '@/lib/crypto';
+import { resetDeviceIndexCacheForTests } from '@/lib/devices';
 import { resetEnvForTests } from '@/lib/env';
+import { JSLICE_APP_ID, setJSliceKeySetForTests } from '@/lib/jslice';
 import { setBackgroundModeForTests } from '@/lib/learning/background';
 import { resetSummaryCacheForTests } from '@/lib/learning/data';
-import { resetStoreCachesForTests } from '@/lib/store';
+import { resetStoreCachesForTests, userPaths } from '@/lib/store';
 
-export const TEST_PASSWORD = 'correct horse battery staple';
+export const JSLICE_URL = 'https://jslice.vercel.app';
+/** The default signed-in user (a Google subject id, as JSlice sends it). */
+export const TEST_UID = '109876543210987654321';
+export const OTHER_UID = '100000000000000000042';
+/** Paths of the default user's documents. */
+export const P = userPaths(TEST_UID);
 export const TEST_CRON_SECRET = 'cron-secret-0123456789abcdef';
 export const EXT_ID = 'hkobmhfcoefpipbfkihdbbkgblckhkae';
 export const OTHER_EXT_ID = 'abcdefghijklmnopabcdefghijklmnop';
 export const APP_ORIGIN = 'https://jammarly-web.vercel.app';
 export const EXT_ORIGIN = `chrome-extension://${EXT_ID}`;
 
-let passwordHash: string | null = null;
-
 export function setupEnv(overrides: Record<string, string | undefined> = {}): void {
-  passwordHash ??= hashPassword(TEST_PASSWORD);
   const env: Record<string, string | undefined> = {
     SESSION_SECRET: 'test-session-secret-that-is-long-enough-0123456789',
-    OWNER_PASSWORD_HASH: passwordHash,
+    JSLICE_URL,
     CRON_SECRET: TEST_CRON_SECRET,
     APP_ORIGIN,
     EXTENSION_IDS: EXT_ID,
@@ -48,8 +51,7 @@ export function freshStore(now?: () => number): MemoryBlobStore {
   setBlobStoreForTests(store);
   resetStoreCachesForTests();
   resetSummaryCacheForTests();
-  resetLoginLimiterForTests();
-  setLoginMinDelayForTests(0);
+  resetDeviceIndexCacheForTests();
   setBackgroundModeForTests('inline');
   return store;
 }
@@ -85,10 +87,61 @@ export function cookieFromResponse(res: Response): string {
   return first.split(';')[0] ?? '';
 }
 
-export async function loginCookie(ip = '203.0.113.1'): Promise<string> {
-  const { POST } = await import('@/app/api/auth/login/route');
-  const res = await POST(req('/api/auth/login', { body: { password: TEST_PASSWORD }, headers: { origin: APP_ORIGIN, 'x-forwarded-for': ip } }), params({}));
-  if (res.status !== 200) throw new Error(`login failed: ${res.status} ${await res.text()}`);
+// ---------------------------------------------------------------------------
+// JSlice tokens: a local ES256 key stands in for JSlice's JWKS.
+// ---------------------------------------------------------------------------
+
+let signingKey: Promise<{ privateKey: CryptoKey; publicKey: CryptoKey }> | null = null;
+
+async function keys(): Promise<{ privateKey: CryptoKey; publicKey: CryptoKey }> {
+  signingKey ??= generateKeyPair('ES256');
+  const k = await signingKey;
+  setJSliceKeySetForTests(async () => k.publicKey);
+  return k;
+}
+
+export interface TokenOptions {
+  sub?: string;
+  email?: string;
+  name?: string;
+  jti?: string;
+  issuer?: string;
+  audience?: string;
+  /** Seconds since the epoch. */
+  iat?: number;
+  expiresInSeconds?: number;
+  privateKey?: CryptoKey;
+}
+
+/** A hand-off token shaped like the ones JSlice mints. */
+export async function jsliceToken(opts: TokenOptions = {}): Promise<string> {
+  const { privateKey } = await keys();
+  const iat = opts.iat ?? Math.floor(Date.now() / 1000);
+  return new SignJWT({ email: opts.email ?? 'writer@example.com', name: opts.name ?? 'Test Writer', picture: 'https://example.com/a.png' })
+    .setProtectedHeader({ alg: 'ES256' })
+    .setIssuer(opts.issuer ?? JSLICE_URL)
+    .setAudience(opts.audience ?? JSLICE_APP_ID)
+    .setSubject(opts.sub ?? TEST_UID)
+    .setJti(opts.jti ?? `jti_${Math.random().toString(36).slice(2)}_${Date.now()}`)
+    .setIssuedAt(iat)
+    .setExpirationTime(iat + (opts.expiresInSeconds ?? 60))
+    .sign(opts.privateKey ?? privateKey);
+}
+
+/** Call the JSlice callback route with a token. */
+export async function jsliceCallback(token: string | null, next?: string): Promise<Response> {
+  await keys();
+  const { GET } = await import('@/app/api/auth/jslice/route');
+  const qs = new URLSearchParams();
+  if (token !== null) qs.set('token', token);
+  if (next !== undefined) qs.set('next', next);
+  return GET(req(`/api/auth/jslice?${qs.toString()}`), params({}));
+}
+
+/** Sign in through the JSlice callback and return the session cookie. */
+export async function loginCookie(sub: string = TEST_UID): Promise<string> {
+  const res = await jsliceCallback(await jsliceToken({ sub }));
+  if (res.status !== 302 || (res.headers.get('location') ?? '').includes('error=')) throw new Error(`sign-in failed: ${res.status} ${res.headers.get('location') ?? ''}`);
   return cookieFromResponse(res);
 }
 

@@ -1,6 +1,7 @@
 /**
  * The learning job (architecture §4 "Learning job", research 08 §8.3 and reviewer corrections): idempotent and
- * resumable, with checkpoints in `runs/<date>-<ctx>.json` (the persistent log on Hobby).
+ * resumable, with checkpoints in `users/<uid>/runs/<date>-<ctx>.json` (the persistent log on Hobby). Each run
+ * belongs to one user; the cron route calls it once per user (see {@link listUserIds}).
  *
  *   1. fold        events since profile.learning.lastEventCursor -> counters, learned rule states, dictionary
  *                  candidates; write profile.learning with a fresh server HLC; purge batches past retention.
@@ -31,9 +32,10 @@ import {
 import { countWords } from '@jammarly/shared/text';
 import { getDeadline } from '@vercel/functions';
 import { isNotModified } from '../blob';
+import { loadIndex } from '../events';
 import { purgeBefore, readEventsSince, readSamplesSince } from '../events';
 import { getServerApiKey } from '../server-key';
-import { PATHS, blob, dayOf, loadProfile, persistQuota, saveProfile, serverHlcAfter } from '../store';
+import { GLOBAL_PATHS, blob, dayOf, isUserId, loadProfile, persistQuota, saveProfile, serverHlcAfter, userPaths } from '../store';
 import { createAnthropicLlm, type LlmClient } from './llm';
 
 export const SYNTHESIS_MODEL = 'claude-opus-5-5';
@@ -71,9 +73,13 @@ export interface RunsLatest {
   latest: { runId: string; path: string } | null;
   byContext: Partial<Record<VoiceContext, { runId: string; at: string }>>;
   manual: { day: string; count: number };
+  /** When a run for each context last finished, whatever its outcome (the cron skips users with nothing newer). */
+  checkedAt?: Partial<Record<VoiceContext, string>>;
 }
 
 export interface RunOptions {
+  /** The user whose events, samples and profile the run reads and writes. */
+  uid: string;
   context: VoiceContext;
   trigger: RunTrigger;
   statsOnly?: boolean;
@@ -101,15 +107,15 @@ export function toStatus(doc: RunDoc): LearningRunStatus {
   };
 }
 
-export async function loadRunsLatest(): Promise<RunsLatest> {
-  const res = await blob().getJson<RunsLatest>(PATHS.runsLatest);
+export async function loadRunsLatest(uid: string): Promise<RunsLatest> {
+  const res = await blob().getJson<RunsLatest>(userPaths(uid).runsLatest);
   if (res === null || isNotModified(res)) return { latest: null, byContext: {}, manual: { day: '', count: 0 } };
   const v = res.value;
-  return { latest: v.latest ?? null, byContext: v.byContext ?? {}, manual: v.manual ?? { day: '', count: 0 } };
+  return { latest: v.latest ?? null, byContext: v.byContext ?? {}, manual: v.manual ?? { day: '', count: 0 }, ...(v.checkedAt !== undefined ? { checkedAt: v.checkedAt } : {}) };
 }
 
-export async function saveRunsLatest(latest: RunsLatest): Promise<void> {
-  await blob().putJson(PATHS.runsLatest, latest);
+export async function saveRunsLatest(uid: string, latest: RunsLatest): Promise<void> {
+  await blob().putJson(userPaths(uid).runsLatest, latest);
 }
 
 export async function loadRun(path: string): Promise<RunDoc | null> {
@@ -119,8 +125,8 @@ export async function loadRun(path: string): Promise<RunDoc | null> {
 }
 
 /** The status of the most recent run, or null. */
-export async function latestRunStatus(): Promise<LearningRunStatus | null> {
-  const latest = await loadRunsLatest();
+export async function latestRunStatus(uid: string): Promise<LearningRunStatus | null> {
+  const latest = await loadRunsLatest(uid);
   if (latest.latest === null) return null;
   const doc = await loadRun(latest.latest.path);
   return doc === null ? null : toStatus(doc);
@@ -159,9 +165,10 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
   const deadlineMs = opts.deadlineMs === undefined ? defaultDeadline() : opts.deadlineMs;
   const remaining = (): number => (deadlineMs === null ? Number.POSITIVE_INFINITY : deadlineMs - Date.now());
   const date = dayOf(nowMs);
+  const uid = opts.uid;
   const ctx = opts.context;
   const runId = `${date}-${ctx}`;
-  const path = PATHS.run(date, ctx);
+  const path = userPaths(uid).run(date, ctx);
   const store = blob();
 
   let run = await loadRun(path);
@@ -174,9 +181,9 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
   delete run.finishedAt;
   delete run.message;
 
-  const latest = await loadRunsLatest();
+  const latest = await loadRunsLatest(uid);
   latest.latest = { runId, path };
-  await saveRunsLatest(latest);
+  await saveRunsLatest(uid, latest);
 
   const save = async (): Promise<void> => {
     await store.putJson(path, run);
@@ -186,6 +193,11 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
     if (message !== undefined) run.message = message;
     if (stage === 'done' || stage === 'failed') run.finishedAt = new Date().toISOString();
     await save();
+    if (stage === 'done') {
+      const latestNow = await loadRunsLatest(uid);
+      latestNow.checkedAt = { ...latestNow.checkedAt, [ctx]: nowIso };
+      await saveRunsLatest(uid, latestNow);
+    }
     await persistQuota(nowMs).catch(() => undefined);
     return toStatus(run);
   };
@@ -202,9 +214,9 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       if (remaining() < STAGE_MIN_REMAINING_MS) return outOfTime('fold');
       run.stage = 'fold';
       await save();
-      const loaded = await loadProfile(nowMs);
+      const loaded = await loadProfile(uid, nowMs);
       const cursor = loaded.profile.learning.lastEventCursor;
-      const since = await readEventsSince(cursor);
+      const since = await readEventsSince(uid, cursor);
       let eventsFolded = 0;
       let newCursor = cursor;
       if (since.items.length > 0) {
@@ -216,6 +228,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
         eventsFolded = folded.folded;
         newCursor = since.maxUploadedAt.length > 0 ? since.maxUploadedAt : cursor;
         await saveProfile(
+          uid,
           (doc) => {
             doc.learning = {
               ...doc.learning,
@@ -231,7 +244,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
         );
       }
       const retentionDays = loaded.profile.settings.privacy.value.retentionDays;
-      const purged = await purgeBefore(dayOf(nowMs - retentionDays * DAY_MS));
+      const purged = await purgeBefore(uid, dayOf(nowMs - retentionDays * DAY_MS));
       run.checkpoints.fold = { eventsFolded, cursor: newCursor, purged };
       await save();
     }
@@ -244,7 +257,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       if (remaining() < STAGE_MIN_REMAINING_MS) return outOfTime('synthesize');
       run.stage = 'synthesize';
       await save();
-      const loaded = await loadProfile(nowMs);
+      const loaded = await loadProfile(uid, nowMs);
       const privacy = loaded.profile.settings.privacy.value;
       if (!privacy.learningEnabled) {
         run.checkpoints.synthesize = { outcome: 'skipped', reason: 'learning_disabled' };
@@ -252,8 +265,8 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       }
       const last = latest.byContext[ctx];
       const sinceAt = last?.at ?? '';
-      const newEvents = (await readEventsSince(sinceAt)).items.filter((e) => eventCtx(e) === ctx);
-      const newSamples = (await readSamplesSince(sinceAt)).items.filter((s) => s.voiceContext === ctx);
+      const newEvents = (await readEventsSince(uid, sinceAt)).items.filter((e) => eventCtx(e) === ctx);
+      const newSamples = (await readSamplesSince(uid, sinceAt)).items.filter((s) => s.voiceContext === ctx);
       const newWords = newSamples.reduce((n, s) => n + countWords(typeof s.sentence === 'string' ? s.sentence : ''), 0);
       if (newEvents.length < MIN_NEW_EVENTS && newWords < MIN_NEW_SAMPLE_WORDS) {
         run.checkpoints.synthesize = { outcome: 'skipped', reason: 'nothing_new' };
@@ -265,9 +278,9 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
         return finish('done', 'server_key_missing: add a server-side API key on the Tuning page.');
       }
       const previous = loaded.profile.voice.profiles[ctx];
-      const allSamples = (await readSamplesSince('')).items.filter((s) => s.voiceContext === ctx && typeof s.sentence === 'string');
+      const allSamples = (await readSamplesSince(uid, '')).items.filter((s) => s.voiceContext === ctx && typeof s.sentence === 'string');
       const samples = allSamples.slice(-SAMPLES_FOR_SYNTHESIS);
-      const allEvents = (await readEventsSince('')).items.filter((e) => eventCtx(e) === ctx);
+      const allEvents = (await readEventsSince(uid, '')).items.filter((e) => eventCtx(e) === ctx);
       const decisions: VoiceDecisionInput[] = allEvents.filter(isSnippetDecision).map((e) => ({
         rule: e.rule,
         original: e.original,
@@ -300,7 +313,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       if (result.stopReason === 'refusal' || result.stopReason === 'max_tokens') {
         const reason = result.stopReason;
         run.checkpoints.synthesize = { outcome: 'kept_previous', reason };
-        await keepPrevious(ctx, previous, `Synthesis stopped with ${reason}; kept version ${previous?.version ?? 0}.`, result.model, eventsSeen, nowIso, nowMs);
+        await keepPrevious(uid, ctx, previous, `Synthesis stopped with ${reason}; kept version ${previous?.version ?? 0}.`, result.model, eventsSeen, nowIso, nowMs);
         return finish('done', `kept previous version: ${reason}`);
       }
       let candidate: VoiceProfile;
@@ -309,7 +322,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       } catch (err) {
         const reason = err instanceof VoiceOutputError ? 'invalid_output' : 'parse_error';
         run.checkpoints.synthesize = { outcome: 'kept_previous', reason };
-        await keepPrevious(ctx, previous, `Synthesis returned unusable output (${reason}); kept version ${previous?.version ?? 0}.`, result.model, eventsSeen, nowIso, nowMs);
+        await keepPrevious(uid, ctx, previous, `Synthesis returned unusable output (${reason}); kept version ${previous?.version ?? 0}.`, result.model, eventsSeen, nowIso, nowMs);
         return finish('done', `kept previous version: ${reason}`);
       }
       run.candidate = candidate;
@@ -326,7 +339,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       if (remaining() < STAGE_MIN_REMAINING_MS) return outOfTime('lint');
       run.stage = 'lint';
       await save();
-      const loaded = await loadProfile(nowMs);
+      const loaded = await loadProfile(uid, nowMs);
       const candidate = run.candidate;
       const notes = loaded.profile.voice.settings.value.notes;
       const regex = lintVoiceProfile(candidate, notes);
@@ -342,7 +355,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       run.checkpoints.lint = { ok: problems.length === 0, problems };
       if (problems.length > 0) {
         const previous = loaded.profile.voice.profiles[ctx];
-        await keepPrevious(ctx, previous, `Lint rejected the new ${ctx} profile: ${problems.join('; ').slice(0, 300)}`, candidate.generatedBy, 0, nowIso, nowMs);
+        await keepPrevious(uid, ctx, previous, `Lint rejected the new ${ctx} profile: ${problems.join('; ').slice(0, 300)}`, candidate.generatedBy, 0, nowIso, nowMs);
         return finish('done', `lint rejected: ${problems[0] ?? 'problem'}`);
       }
       await save();
@@ -355,6 +368,7 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       await save();
       const candidate = run.candidate;
       const stored = await saveProfile(
+        uid,
         (doc) => {
           const applied = applyOps(doc, [{ op: 'voice', context: ctx, profile: candidate, hlc: serverHlcAfter(doc.learning.updatedHlc) }], { now: nowIso, by: 'learning-job' });
           const next = applied.doc;
@@ -365,39 +379,40 @@ export async function runLearningJob(opts: RunOptions): Promise<LearningRunStatu
       );
       run.checkpoints.store = { profileVersion: stored.version, voiceVersion: candidate.version };
       delete run.candidate;
-      const latestNow = await loadRunsLatest();
+      const latestNow = await loadRunsLatest(uid);
       latestNow.byContext[ctx] = { runId, at: nowIso };
       latestNow.latest = { runId, path };
-      await saveRunsLatest(latestNow);
+      await saveRunsLatest(uid, latestNow);
     }
     return finish('done', `Stored ${ctx} voice profile version ${run.checkpoints.store.voiceVersion}.`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[jammarly] learning job ${runId} failed:`, message);
+    console.error(`[jammarly] learning job ${runId} failed for one user:`, message);
     return finish('failed', message.slice(0, 300));
   }
 }
 
 async function resolveLlm(opts: RunOptions, deadlineMs: number | null): Promise<LlmClient | null> {
   if (opts.llm !== undefined) return opts.llm;
-  const key = await getServerApiKey();
+  const key = await getServerApiKey(opts.uid);
   if (key === null) return null;
   const budget = deadlineMs === null ? 10 * 60 * 1000 : deadlineMs - Date.now() - DEADLINE_MARGIN_MS;
   return createAnthropicLlm(key.key, budget);
 }
 
 /** Record a kept-previous outcome in learning.history (and refresh the context's last-run marker). */
-async function keepPrevious(ctx: VoiceContext, previous: VoiceProfile | undefined, changelog: string, model: string, eventsSeen: number, nowIso: string, nowMs: number): Promise<void> {
+async function keepPrevious(uid: string, ctx: VoiceContext, previous: VoiceProfile | undefined, changelog: string, model: string, eventsSeen: number, nowIso: string, nowMs: number): Promise<void> {
   await saveProfile(
+    uid,
     (doc) => {
       appendHistory(doc, { at: nowIso, eventsSeen, changelog, model, version: previous?.version ?? 0 });
       return doc;
     },
     { by: 'learning-job', nowMs },
   );
-  const latest = await loadRunsLatest();
+  const latest = await loadRunsLatest(uid);
   latest.byContext[ctx] = { runId: `${dayOf(nowMs)}-${ctx}`, at: nowIso };
-  await saveRunsLatest(latest);
+  await saveRunsLatest(uid, latest);
 }
 
 /** Haiku yes/no classifier. Returns 'yes', 'no' or 'unknown' (refusal or an unparsable answer). */
@@ -422,6 +437,47 @@ export async function classify(llm: LlmClient, profile: VoiceProfile): Promise<'
   } catch {
     return 'unknown';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Every user (the cron)
+// ---------------------------------------------------------------------------
+
+/** Every user that ever signed in, from the `auth/users/` markers (one list() call per page). */
+export async function listUserIds(): Promise<string[]> {
+  const entries = await blob().list(GLOBAL_PATHS.usersPrefix);
+  const ids: string[] = [];
+  for (const e of entries) {
+    const name = e.path.slice(GLOBAL_PATHS.usersPrefix.length).replace(/\.json$/, '');
+    if (isUserId(name)) ids.push(name);
+  }
+  return ids.sort();
+}
+
+/**
+ * True when the cron has something to do for this user and context: event or sample batches uploaded after
+ * the last finished run for the context (a rerun would otherwise reach the same result), or batches older
+ * than the retention window to purge. A user with neither costs a few reads instead of a run, which keeps the
+ * nightly job cheap as the number of users grows. "Run now" on the dashboard skips this check.
+ */
+export async function needsCronRun(uid: string, ctx: VoiceContext, nowMs: number = Date.now()): Promise<boolean> {
+  const { index } = await loadIndex(uid);
+  if (index.batches.length === 0) return false;
+  const checkedAt = (await loadRunsLatest(uid)).checkedAt?.[ctx] ?? '';
+  if (index.batches.some((b) => b.uploadedAt > checkedAt)) return true;
+  const { profile } = await loadProfile(uid, nowMs);
+  const cutoffDay = dayOf(nowMs - profile.settings.privacy.value.retentionDays * DAY_MS);
+  return index.batches.some((b) => b.day < cutoffDay);
+}
+
+/**
+ * The order the cron visits users in: rotated by the day so that, when one invocation runs out of time, the
+ * users it could not reach go first the next day instead of always being last.
+ */
+export function cronOrder(uids: readonly string[], nowMs: number): string[] {
+  if (uids.length === 0) return [];
+  const offset = Math.floor(nowMs / DAY_MS) % uids.length;
+  return [...uids.slice(offset), ...uids.slice(0, offset)];
 }
 
 /** Deep copy helper for tests that inspect run documents. */

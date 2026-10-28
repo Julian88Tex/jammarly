@@ -213,6 +213,8 @@ export class VercelBlobStore implements BlobStore {
       return { etag: res.etag };
     } catch (err) {
       if (err instanceof sdk.BlobPreconditionFailedError) throw new PreconditionFailed(path);
+      // A create-only write (allowOverwrite: false) to an existing path comes back as a 400 "already exists".
+      if (opts.allowOverwrite === false && err instanceof sdk.BlobError && /already exists/i.test(err.message)) throw new BlobAlreadyExists(path);
       throw err;
     }
   }

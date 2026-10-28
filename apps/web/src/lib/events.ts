@@ -1,12 +1,12 @@
 /**
- * Feedback-event and voice-sample batches: `events/<YYYY-MM-DD>/<deviceId>.jsonl` and
+ * Feedback-event and voice-sample batches per user (under `users/<uid>/`): `events/<YYYY-MM-DD>/<deviceId>.jsonl` and
  * `samples/<YYYY-MM-DD>/<deviceId>.jsonl` (one append per upload call: read + concat + put) plus
  * `events/index.json`, the list of batches with counts and offsets, so the hot path never calls `list()`.
  */
 import type { FeedbackEvent, VoiceSample } from '@jammarly/shared/learning';
 import { PreconditionFailed, isNotModified } from './blob';
 import { ApiRouteError } from './errors';
-import { PATHS, blob, dayOf } from './store';
+import { blob, dayOf, userPaths } from './store';
 
 export type BatchKind = 'events' | 'samples';
 
@@ -50,20 +50,20 @@ function countLines(text: string): number {
   return n;
 }
 
-export async function loadIndex(): Promise<{ index: BatchIndex; etag: string | null }> {
-  const res = await blob().getJson<BatchIndex>(PATHS.eventsIndex);
+export async function loadIndex(uid: string): Promise<{ index: BatchIndex; etag: string | null }> {
+  const res = await blob().getJson<BatchIndex>(userPaths(uid).eventsIndex);
   if (res === null || isNotModified(res)) return { index: emptyIndex(), etag: null };
   const batches = Array.isArray(res.value?.batches) ? res.value.batches : [];
   return { index: { v: 1, batches }, etag: res.etag };
 }
 
-export async function updateIndex(mutate: (index: BatchIndex) => void): Promise<BatchIndex> {
+export async function updateIndex(uid: string, mutate: (index: BatchIndex) => void): Promise<BatchIndex> {
   const store = blob();
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const { index, etag } = await loadIndex();
+    const { index, etag } = await loadIndex(uid);
     mutate(index);
     try {
-      await store.putJson(PATHS.eventsIndex, index, etag === null ? { allowOverwrite: false } : { ifMatch: etag });
+      await store.putJson(userPaths(uid).eventsIndex, index, etag === null ? { allowOverwrite: false } : { ifMatch: etag });
       return index;
     } catch (err) {
       if (err instanceof PreconditionFailed || (err instanceof Error && err.name === 'BlobAlreadyExists')) continue;
@@ -73,22 +73,23 @@ export async function updateIndex(mutate: (index: BatchIndex) => void): Promise<
   throw new ApiRouteError(409, 'conflict_retry', 'The event index kept changing; retry.');
 }
 
-function batchPath(kind: BatchKind, day: string, deviceId: string): string {
+function batchPath(uid: string, kind: BatchKind, day: string, deviceId: string): string {
+  const PATHS = userPaths(uid);
   return kind === 'events' ? PATHS.eventsBatch(day, deviceId) : PATHS.samplesBatch(day, deviceId);
 }
 
 /** Append one upload to the device's day file and record it in the index. */
-export async function appendBatch(kind: BatchKind, deviceId: string, lines: readonly unknown[], nowMs: number = Date.now()): Promise<BatchIndexEntry> {
+export async function appendBatch(uid: string, kind: BatchKind, deviceId: string, lines: readonly unknown[], nowMs: number = Date.now()): Promise<BatchIndexEntry> {
   const store = blob();
   const day = dayOf(nowMs);
-  const path = batchPath(kind, day, deviceId);
+  const path = batchPath(uid, kind, day, deviceId);
   const existing = await store.getText(path);
   const prior = existing?.text ?? '';
   const offset = countLines(prior);
   const text = prior + lines.map((l) => JSON.stringify(l)).join('\n') + (lines.length > 0 ? '\n' : '');
   await store.putText(path, text);
   const entry: BatchIndexEntry = { kind, path, day, deviceId, offset, count: lines.length, uploadedAt: new Date(nowMs).toISOString() };
-  await updateIndex((index) => {
+  await updateIndex(uid, (index) => {
     index.batches.push(entry);
   });
   return entry;
@@ -102,8 +103,8 @@ export interface ReadResult<T> {
 }
 
 /** Read the lines of every index entry that matches `filter`, each file once, from the lowest matched offset. */
-export async function readBatches<T>(kind: BatchKind, filter: (e: BatchIndexEntry) => boolean): Promise<ReadResult<T>> {
-  const { index } = await loadIndex();
+export async function readBatches<T>(uid: string, kind: BatchKind, filter: (e: BatchIndexEntry) => boolean): Promise<ReadResult<T>> {
+  const { index } = await loadIndex(uid);
   const entries = index.batches.filter((e) => e.kind === kind && filter(e));
   const minOffset = new Map<string, number>();
   for (const e of entries) {
@@ -123,43 +124,44 @@ export async function readBatches<T>(kind: BatchKind, filter: (e: BatchIndexEntr
   return { items, entries, maxUploadedAt };
 }
 
-export function readEventsSince(cursor: string): Promise<ReadResult<FeedbackEvent>> {
-  return readBatches<FeedbackEvent>('events', (e) => cursor.length === 0 || e.uploadedAt > cursor);
+export function readEventsSince(uid: string, cursor: string): Promise<ReadResult<FeedbackEvent>> {
+  return readBatches<FeedbackEvent>(uid, 'events', (e) => cursor.length === 0 || e.uploadedAt > cursor);
 }
 
-export function readEventsFromDay(fromDay: string): Promise<ReadResult<FeedbackEvent>> {
-  return readBatches<FeedbackEvent>('events', (e) => e.day >= fromDay);
+export function readEventsFromDay(uid: string, fromDay: string): Promise<ReadResult<FeedbackEvent>> {
+  return readBatches<FeedbackEvent>(uid, 'events', (e) => e.day >= fromDay);
 }
 
-export function readAllEvents(): Promise<ReadResult<FeedbackEvent>> {
-  return readBatches<FeedbackEvent>('events', () => true);
+export function readAllEvents(uid: string): Promise<ReadResult<FeedbackEvent>> {
+  return readBatches<FeedbackEvent>(uid, 'events', () => true);
 }
 
-export function readSamplesSince(cursor: string): Promise<ReadResult<VoiceSample>> {
-  return readBatches<VoiceSample>('samples', (e) => cursor.length === 0 || e.uploadedAt > cursor);
+export function readSamplesSince(uid: string, cursor: string): Promise<ReadResult<VoiceSample>> {
+  return readBatches<VoiceSample>(uid, 'samples', (e) => cursor.length === 0 || e.uploadedAt > cursor);
 }
 
-export function readAllSamples(): Promise<ReadResult<VoiceSample>> {
-  return readBatches<VoiceSample>('samples', () => true);
+export function readAllSamples(uid: string): Promise<ReadResult<VoiceSample>> {
+  return readBatches<VoiceSample>(uid, 'samples', () => true);
 }
 
 /** Delete batches whose day is before `cutoffDay` (retention). Deletes are free; the index is rewritten once. */
-export async function purgeBefore(cutoffDay: string): Promise<number> {
-  const { index } = await loadIndex();
+export async function purgeBefore(uid: string, cutoffDay: string): Promise<number> {
+  const { index } = await loadIndex(uid);
   const old = index.batches.filter((e) => e.day < cutoffDay);
   if (old.length === 0) return 0;
   const paths = [...new Set(old.map((e) => e.path))];
   await blob().del(paths);
-  await updateIndex((idx) => {
+  await updateIndex(uid, (idx) => {
     idx.batches = idx.batches.filter((e) => e.day >= cutoffDay);
   });
   return paths.length;
 }
 
 /** Delete every event and sample batch (index-driven plus a list() sweep for orphans) and reset the index. */
-export async function deleteAllBatches(): Promise<{ events: number; samples: number }> {
+export async function deleteAllBatches(uid: string): Promise<{ events: number; samples: number }> {
+  const PATHS = userPaths(uid);
   const store = blob();
-  const { index } = await loadIndex();
+  const { index } = await loadIndex(uid);
   const paths = new Set<string>(index.batches.map((e) => e.path));
   for (const prefix of [PATHS.eventsPrefix, PATHS.samplesPrefix]) {
     for (const entry of await store.list(prefix)) if (entry.path !== PATHS.eventsIndex) paths.add(entry.path);

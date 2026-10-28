@@ -3,7 +3,7 @@ import { ProfileDocumentSchema } from '@jammarly/shared/merge';
 import { requireSessionOrDevice } from '@/lib/auth';
 import { preflight } from '@/lib/cors';
 import { ApiRouteError, errorBody, jsonResponse, route } from '@/lib/http';
-import { ProfileConflict, bumpDeviceQuota, loadProfileConditional, saveProfile, type ProfileLoaded } from '@/lib/store';
+import { ProfileConflict, actorName, bumpDeviceQuota, loadProfileConditional, saveProfile, type ProfileLoaded } from '@/lib/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,10 +20,10 @@ export function conflictResponse(req: Request, err: ProfileConflict): Response {
   return jsonResponse(req, body, { status: 412, headers: profileHeaders(err.current) });
 }
 
-/** GET (device or owner) with If-None-Match -> 304, or ProfileGetResponse + ETag + X-Profile-Version. */
+/** GET (device or signed-in user) with If-None-Match -> 304, or ProfileGetResponse + ETag + X-Profile-Version. */
 export const GET = route('shared', async (req) => {
-  await requireSessionOrDevice(req);
-  const result = await loadProfileConditional(req.headers.get(IF_NONE_MATCH_HEADER));
+  const { uid } = await requireSessionOrDevice(req);
+  const result = await loadProfileConditional(uid, req.headers.get(IF_NONE_MATCH_HEADER));
   if ('notModified' in result) {
     return new Response(null, { status: 304, headers: { ...profileHeaders(result), ...Object.fromEntries(jsonResponse(req, null).headers) } });
   }
@@ -31,9 +31,9 @@ export const GET = route('shared', async (req) => {
   return jsonResponse(req, body, { headers: profileHeaders(result) });
 });
 
-/** PUT (device or owner) full document with If-Match -> 200 ProfileGetResponse or 412 ProfilePutConflict. */
+/** PUT (device or signed-in user) full document with If-Match -> 200 ProfileGetResponse or 412 ProfilePutConflict. */
 export const PUT = route('shared', async (req) => {
-  const actor = await requireSessionOrDevice(req);
+  const { uid, actor } = await requireSessionOrDevice(req);
   const ifMatch = req.headers.get(IF_MATCH_HEADER);
   if (ifMatch === null || ifMatch.length === 0) throw new ApiRouteError(428, 'precondition_failed', 'PUT /api/profile requires an If-Match header.');
   let raw: unknown;
@@ -52,12 +52,13 @@ export const PUT = route('shared', async (req) => {
   let stored: ProfileLoaded;
   try {
     stored = await saveProfile(
+      uid,
       (current) => {
         if (actor.kind !== 'device') return incoming;
         // Devices may replace everything except the server-authoritative voice profiles and learning section.
         return { ...incoming, voice: { settings: incoming.voice.settings, profiles: current.voice.profiles }, learning: current.learning };
       },
-      { ifMatch, by: actor.kind === 'device' ? actor.deviceId : 'owner' },
+      { ifMatch, by: actorName(actor) },
     );
   } catch (err) {
     if (err instanceof ProfileConflict) return conflictResponse(req, err);

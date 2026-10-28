@@ -18,6 +18,7 @@
     "@jammarly/shared": "*",
     "@vercel/blob": "2.8.2",
     "iron-session": "9.0.1",
+    "jose": "6.2.13",
     "@anthropic-ai/sdk": "0.135.0",
     "zod": "4.6.7",
     "@vercel/functions": "^3"
@@ -33,7 +34,7 @@
     "typescript": "5.9.3",
     "vitest": "5.0.5"
   },
-  "description": "Jammarly companion web app: owner login, device pairing, profile sync, suggestion tuning and tone learning.",
+  "description": "Jammarly companion web app: JSlice sign-in for many users, device pairing, profile sync, suggestion tuning and tone learning.",
   "engines": {
     "node": "24.x"
   }
