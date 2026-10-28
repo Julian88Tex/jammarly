@@ -1,6 +1,6 @@
 {
   "name": "@jammarly/extension",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Jammarly Chrome extension: Grammarly-class writing assistant powered by Claude.",
   "private": true,
   "type": "module",
