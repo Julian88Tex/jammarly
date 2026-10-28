@@ -284,6 +284,7 @@ describe('repeated_word', () => {
     ["don't don't do it", ["don't don't→don't"]],
     ['a\u00a0a dog', []],
     ['The The cat', ['The The→The']],
+    ['the recording, so so please resend', ['so so→so']],
   ])('%j', (text, expected) => {
     expect(fixes(text, 'repeated_word')).toEqual(expected);
   });
@@ -294,6 +295,7 @@ describe('repeated_word', () => {
     'bye bye',
     'ha ha ha',
     'it was so so',
+    'it was so so.',
     'Bora Bora is nice',
     'I love Duran Duran',
     'the long-term term sheet',

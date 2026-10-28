@@ -167,6 +167,21 @@ describe('accept-all menu', () => {
 });
 
 describe('toast', () => {
+  it('keeps one persistent progress toast with a spinner, updates it in place and removes it on null', () => {
+    f.progress('Checking everything…');
+    let all = h.qAll('[data-jm="toast"]');
+    expect(all).toHaveLength(1);
+    expect(all[0]!.querySelector('.jm-icon-spinner')).not.toBeNull();
+    f.progress('Applied 2 changes, checking again…');
+    all = h.qAll('[data-jm="toast"]');
+    expect(all).toHaveLength(1);
+    expect(text(all[0]!.querySelector('.jm-toast-msg'))).toBe('Applied 2 changes, checking again…');
+    vi.advanceTimersByTime(TOAST_DEFAULT_MS * 3);
+    expect(h.qAll('[data-jm="toast"]')).toHaveLength(1);
+    f.progress(null);
+    expect(h.qAll('[data-jm="toast"]')).toHaveLength(0);
+  });
+
   it('shows "Applied N changes — Undo" with an Undo button, auto-dismisses after 10 s and stacks', () => {
     f.toast('Applied 3 changes', { undoTransactionId: 'tx-9' });
     const toasts = h.q('[data-jm="toasts"]');

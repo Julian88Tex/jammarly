@@ -73,6 +73,8 @@ export interface FieldOverlay {
   openMenu(): void;
   closeMenu(): void;
   toast(message: string, options?: { undoTransactionId?: string; durationMs?: number }): void;
+  /** One persistent progress toast with a spinner for long work (Accept everything); null removes it. */
+  progress(message: string | null): void;
   setUnsupported(reason: string): void;
   dispose(): void;
 }

@@ -115,6 +115,12 @@ export function computeStatus(input: StatusInput): FieldStatus {
 const MAX_SWEEP_ROUNDS = 6;
 /** Longest Accept everything waits for a check already under way before applying what it has. */
 const SETTLE_TIMEOUT_MS = 20_000;
+/** Longest one sweep round waits for its re-check; a lost or stuck check ends the sweep instead of hanging it. */
+const SWEEP_ROUND_TIMEOUT_MS = 45_000;
+
+function sweepProgressText(total: number): string {
+  return total > 0 ? `Applied ${total} change${total === 1 ? '' : 's'}, checking again…` : 'Checking everything…';
+}
 
 function sweepDoneText(total: number, rounds: number): string {
   return rounds > 1 ? `Fixed ${total} issue${total === 1 ? '' : 's'} in ${rounds} rounds` : `Applied ${total} change${total === 1 ? '' : 's'}`;
@@ -148,6 +154,8 @@ export class FieldSession {
   private everChecked = false;
   /** "Accept everything" keeps going: apply, re-check the changed text, apply that round's fixes, until clean. */
   private sweep: { scope: AcceptAllScope; round: number; total: number; lastTx: string; txIds: string[]; seen: string[]; pass?: RequestedPass } | null = null;
+  /** Ends a sweep round whose re-check never lands. */
+  private sweepTimer: unknown = null;
   /** Accept everything presses waiting for the in-flight checks to land. */
   private settleWaiters: (() => void)[] = [];
   /** A finished multi-round sweep: its toast's Undo (keyed by the last round's transaction) reverts every round. */
@@ -471,9 +479,11 @@ export class FieldSession {
 
   async acceptAll(scope: AcceptAllScope, via: FeedbackVia = 'bulk', continuing = false): Promise<number> {
     if (this.disposed) return 0;
-    if (!continuing) this.sweep = null;
+    if (!continuing) this.stopSweep();
     // One press should get everything: let a check that is under way (or owed) land first.
     if (!continuing && scope.suggestionIds === undefined) {
+      // This wait and the rounds after it can take a while: show that the press is being worked on.
+      if (this.canCheck()) this.ui.progress(sweepProgressText(0));
       await this.settleChecks();
       if (this.disposed) return 0;
     }
@@ -501,7 +511,7 @@ export class FieldSession {
         // No toast until the sweep ends: one toast reports the total, and its Undo reverts every round.
         this.sweep = { scope, round, total, lastTx: tx.id, txIds, seen };
       } else {
-        this.sweep = null;
+        this.stopSweep();
         this.rememberSweep(txIds);
         this.ui.toast(sweepDoneText(total, round), { undoTransactionId: tx.id });
       }
@@ -518,7 +528,11 @@ export class FieldSession {
         if (this.canCheck()) {
           const pass = passFor('deep', this.deps.getConfig().mode);
           this.sweep.pass = pass;
+          this.ui.progress(sweepProgressText(total));
           this.requestPass(pass, 'after-apply');
+          // Nothing was sent (every paragraph is already checked at this depth): no result will come to continue on.
+          if (!this.inflight[pass]) void this.continueSweep();
+          else this.armSweepTimer();
         } else void this.continueSweep();
       }
       return n;
@@ -527,6 +541,7 @@ export class FieldSession {
       this.finishSweep();
       return 0;
     }
+    this.ui.progress(null);
     if (result.skipped.length > 0) this.ui.toast("Couldn't apply these changes here");
     else if (scope.suggestionIds === undefined) {
       // A shortcut press with nothing to do still answers, so it never looks like it was ignored.
@@ -573,9 +588,26 @@ export class FieldSession {
     for (const w of waiters) w();
   }
 
+  /** Drops the sweep state, its watchdog and its progress toast (no summary toast). */
+  private stopSweep(): void {
+    this.sweep = null;
+    if (this.sweepTimer !== null) this.timers.clearTimeout(this.sweepTimer);
+    this.sweepTimer = null;
+    if (!this.disposed) this.ui.progress(null);
+  }
+
+  private armSweepTimer(): void {
+    if (this.sweepTimer !== null) this.timers.clearTimeout(this.sweepTimer);
+    const sweep = this.sweep;
+    this.sweepTimer = this.timers.setTimeout(() => {
+      this.sweepTimer = null;
+      if (!this.disposed && this.sweep === sweep) this.finishSweep();
+    }, SWEEP_ROUND_TIMEOUT_MS);
+  }
+
   private finishSweep(): void {
     const sweep = this.sweep;
-    this.sweep = null;
+    this.stopSweep();
     if (!sweep) return;
     this.rememberSweep(sweep.txIds);
     this.ui.toast(sweepDoneText(sweep.total, sweep.round), { undoTransactionId: sweep.lastTx });
@@ -742,9 +774,9 @@ export class FieldSession {
     this.deps.send({ type: 'field-detached', fieldId: this.fieldId });
     this.disposed = true;
     this.scheduler.dispose();
-    for (const t of [this.typingTimer, this.idleTimer, this.stateTimer]) if (t !== null) this.timers.clearTimeout(t);
+    for (const t of [this.typingTimer, this.idleTimer, this.stateTimer, this.sweepTimer]) if (t !== null) this.timers.clearTimeout(t);
     if (this.layoutFrame !== null) this.timers.cancelFrame(this.layoutFrame);
-    this.typingTimer = this.idleTimer = this.stateTimer = this.layoutFrame = null;
+    this.typingTimer = this.idleTimer = this.stateTimer = this.sweepTimer = this.layoutFrame = null;
     for (const u of this.unsubs.splice(0)) this.safely(u, undefined);
     this.safely(() => this.deps.overlay.detach(this.fieldId), undefined);
     this.safely(() => this.adapter.dispose(), undefined);
@@ -763,7 +795,8 @@ export class FieldSession {
     if (!change) return;
     const rebase = this.store.rebase(oldText, text, own ? { ids: this.own!.ids } : undefined);
     if (!own) {
-      this.sweep = null; // the user took over: stop applying rounds
+      // The user took over: stop applying rounds, and still report (with Undo) what was applied so far.
+      if (this.sweep) this.finishSweep();
       for (const s of rebase.dropped) {
         this.feedback.invalidated(s, oldText);
         this.feedback.trackDropped(s, oldText);

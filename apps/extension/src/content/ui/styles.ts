@@ -639,6 +639,7 @@ button {
   animation: jm-in 120ms ease-out;
 }
 .jm-toast-msg { flex: 1 1 auto; }
+.jm-toast .jm-icon-spinner { flex: none; animation: jm-spin 900ms linear infinite; }
 .jm-toast-undo {
   padding: 4px 10px;
   border: 0;
@@ -664,7 +665,7 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .jm-card, .jm-menu, .jm-toast, .jm-power-menu { animation: none; }
   .jm-btn, .jm-ul, .jm-power { transition: none; }
-  .jm-btn .jm-icon-spinner { animation-duration: 2s; }
+  .jm-btn .jm-icon-spinner, .jm-toast .jm-icon-spinner { animation-duration: 2s; }
 }
 
 @media (forced-colors: active) {

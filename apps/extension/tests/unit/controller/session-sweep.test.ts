@@ -73,6 +73,48 @@ describe('field session: Accept everything sweeps', () => {
     h.session.dispose();
   });
 
+  it('shows live progress while it sweeps and clears it when done', async () => {
+    const h = makeSession({ text: TEXT });
+    let req = firstCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [sugAt(TEXT, 'are planning', { id: 's1', replacement: 'plan', ...style })], { pass: req.pass }) });
+    await h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    expect(h.ui.progressLog).toContain('Checking everything…');
+    expect(h.ui.progressLog.at(-1)).toBe('Applied 1 change, checking again…');
+    req = lastCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, h.adapter.getText(), [], { pass: req.pass }) });
+    await flushPromises(6);
+    expect(h.ui.progressLog.at(-1)).toBeNull();
+    expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
+    h.session.dispose();
+  });
+
+  it('a re-check that never comes back ends the sweep instead of hanging it', async () => {
+    const h = makeSession({ text: TEXT });
+    const req = firstCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [sugAt(TEXT, 'are planning', { id: 's1', replacement: 'plan', ...style })], { pass: req.pass }) });
+    await h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    expect(h.ui.toasts).toHaveLength(0);
+    vi.advanceTimersByTime(45_000);
+    await flushPromises();
+    expect(h.ui.progressLog.at(-1)).toBeNull();
+    expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
+    h.session.dispose();
+  });
+
+  it('typing mid-sweep stops it but still reports what was applied', async () => {
+    const h = makeSession({ text: TEXT });
+    const req = firstCheck(h);
+    h.emit({ type: 'check-result', result: makeResult('f1', req.version, TEXT, [sugAt(TEXT, 'are planning', { id: 's1', replacement: 'plan', ...style })], { pass: req.pass }) });
+    await h.session.acceptAll({ group: 'all' });
+    await flushPromises();
+    h.adapter.type(h.adapter.getText() + ' Thanks');
+    expect(h.ui.progressLog.at(-1)).toBeNull();
+    expect(h.ui.toasts.at(-1)?.message).toBe('Applied 1 change');
+    h.session.dispose();
+  });
+
   it('stops after the round limit even when every re-check finds more', async () => {
     const h = makeSession({ text: TEXT });
     let req = firstCheck(h);
